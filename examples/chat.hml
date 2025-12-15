@@ -1,0 +1,175 @@
+#!/usr/bin/env hemlock
+// Interactive chat example
+//
+// Usage:
+//   hemlock examples/chat.hml <model.gguf>
+
+import "llama" from "../llama.hml";
+
+fn main(args) {
+    if (args.length < 2) {
+        print("Usage: hemlock examples/chat.hml <model.gguf>");
+        return 1;
+    }
+
+    let model_path = args[1];
+
+    print("Loading model: " + model_path);
+    print("(This may take a while...)");
+    print("");
+
+    // Initialize backend
+    llama.backend_init();
+
+    // Load model with GPU offloading if available
+    let n_gpu_layers = 0;
+    if (llama.supports_gpu()) {
+        n_gpu_layers = 99;  // Offload all layers
+        print("GPU support detected, offloading layers to GPU");
+    }
+
+    let model = llama.model_load(model_path, {
+        n_gpu_layers: n_gpu_layers
+    });
+
+    let info = llama.model_info(model);
+    print("Model: " + info.description);
+    print("");
+
+    // Create context with larger context window for chat
+    let ctx = llama.context_create(model, {
+        n_ctx: 4096,
+        n_batch: 512
+    });
+
+    // Create sampler for chat
+    let sampler = llama.sampler_create({
+        temp: 0.8,
+        top_k: 40,
+        top_p: 0.95,
+        min_p: 0.05,
+        repeat_penalty: 1.1,
+        repeat_last_n: 64
+    });
+
+    // Get vocab info
+    let vocab = llama.vocab_info(model);
+
+    // Chat loop
+    print("Chat started! Type 'quit' to exit, 'clear' to reset context.");
+    print("----------------------------------------");
+    print("");
+
+    let history = "";
+    let n_past = 0;
+
+    while (true) {
+        // Read user input
+        io.write(io.stdout, "You: ");
+        io.flush(io.stdout);
+        let user_input = io.readline(io.stdin);
+
+        if (user_input == null || user_input == "quit" || user_input == "exit") {
+            print("Goodbye!");
+            break;
+        }
+
+        if (user_input == "clear") {
+            llama.kv_cache_clear(ctx);
+            history = "";
+            n_past = 0;
+            llama.sampler_reset(sampler);
+            print("Context cleared!");
+            print("");
+            continue;
+        }
+
+        if (user_input.trim() == "") {
+            continue;
+        }
+
+        // Format as chat (simple format, adjust for your model)
+        let prompt = "";
+        if (n_past == 0) {
+            prompt = "User: " + user_input + "\nAssistant:";
+        } else {
+            prompt = "\nUser: " + user_input + "\nAssistant:";
+        }
+
+        // Tokenize the new input
+        let tokens = llama.tokenize(model, prompt, {
+            add_special: n_past == 0,  // Add BOS only for first message
+            parse_special: false
+        });
+
+        // Check if we need to shift context
+        let ctx_size = llama.context_info(ctx).n_ctx;
+        if (n_past + tokens.length + 256 > ctx_size) {
+            // Remove oldest tokens but keep some context
+            let n_keep = 256;
+            let n_discard = n_past - n_keep;
+            if (n_discard > 0) {
+                llama.kv_cache_seq_rm(ctx, 0, n_keep, n_keep + n_discard);
+                llama.kv_cache_seq_add(ctx, 0, n_keep + n_discard, -1, -n_discard);
+                n_past = n_keep;
+                print("[Context shifted, keeping " + n_keep + " tokens]");
+            }
+        }
+
+        // Decode the prompt tokens
+        let result = llama.decode(ctx, tokens, n_past);
+        if (result != 0) {
+            print("Error decoding: " + result);
+            continue;
+        }
+        n_past = n_past + tokens.length;
+
+        // Generate response
+        io.write(io.stdout, "Assistant: ");
+        io.flush(io.stdout);
+
+        let response = "";
+        let max_tokens = 512;
+
+        for (let i = 0; i < max_tokens; i = i + 1) {
+            let token = llama.sample(sampler, ctx, -1);
+
+            // Check for end of generation
+            if (llama.is_eog(model, token)) {
+                break;
+            }
+
+            // Check for end of turn markers
+            let piece = llama.token_to_piece(model, token, false);
+
+            // Stop on "User:" to prevent the model from speaking as the user
+            if (response.ends_with("User") && piece.starts_with(":")) {
+                break;
+            }
+
+            response = response + piece;
+            io.write(io.stdout, piece);
+            io.flush(io.stdout);
+
+            // Decode the new token
+            result = llama.decode(ctx, [token], n_past);
+            if (result != 0) {
+                break;
+            }
+            n_past = n_past + 1;
+        }
+
+        print("");
+        print("");
+    }
+
+    // Cleanup
+    llama.sampler_free(sampler);
+    llama.context_free(ctx);
+    llama.model_free(model);
+    llama.backend_free();
+
+    return 0;
+}
+
+main(args);

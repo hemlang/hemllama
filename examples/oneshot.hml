@@ -1,0 +1,34 @@
+#!/usr/bin/env hemlock
+// One-shot completion example using the high-level complete() function
+//
+// Usage:
+//   hemlock examples/oneshot.hml <model.gguf> "Your prompt"
+
+import "llama" from "../llama.hml";
+
+fn main(args) {
+    if (args.length < 3) {
+        print("Usage: hemlock examples/oneshot.hml <model.gguf> <prompt>");
+        return 1;
+    }
+
+    let model_path = args[1];
+    let prompt = args[2];
+
+    print("Generating...");
+    print("");
+
+    // Use the simple complete() function for one-shot generation
+    let result = llama.complete(model_path, prompt, {
+        n_predict: 256,
+        temp: 0.7,
+        top_p: 0.9
+    });
+
+    print("=== Response ===");
+    print(result);
+
+    return 0;
+}
+
+main(args);
