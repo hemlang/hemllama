@@ -1,0 +1,902 @@
+// hemllama - Hemlock bindings for llama.cpp
+//
+// Usage:
+//   import "llama" from "hemllama";
+//
+//   llama.backend_init();
+//   let model = llama.model_load("model.gguf");
+//   let ctx = llama.context_create(model);
+//   ...
+//   llama.context_free(ctx);
+//   llama.model_free(model);
+//   llama.backend_free();
+
+import "libllama.so";
+
+// ============================================================================
+// Constants
+// ============================================================================
+
+export let TOKEN_NULL = -1;
+export let DEFAULT_SEED = 0xFFFFFFFF;
+
+// Vocab types
+export let VOCAB_TYPE_NONE = 0;
+export let VOCAB_TYPE_SPM = 1;   // LLaMA tokenizer (byte-level BPE)
+export let VOCAB_TYPE_BPE = 2;   // GPT-2 tokenizer
+export let VOCAB_TYPE_WPM = 3;   // BERT tokenizer (WordPiece)
+export let VOCAB_TYPE_UGM = 4;   // T5 tokenizer (Unigram)
+export let VOCAB_TYPE_RWKV = 5;  // RWKV tokenizer
+
+// Split modes for multi-GPU
+export let SPLIT_MODE_NONE = 0;   // Single GPU
+export let SPLIT_MODE_LAYER = 1;  // Split layers across GPUs
+export let SPLIT_MODE_ROW = 2;    // Tensor parallelism
+
+// Pooling types
+export let POOLING_TYPE_UNSPECIFIED = -1;
+export let POOLING_TYPE_NONE = 0;
+export let POOLING_TYPE_MEAN = 1;
+export let POOLING_TYPE_CLS = 2;
+export let POOLING_TYPE_LAST = 3;
+
+// RoPE scaling types
+export let ROPE_SCALING_UNSPECIFIED = -1;
+export let ROPE_SCALING_NONE = 0;
+export let ROPE_SCALING_LINEAR = 1;
+export let ROPE_SCALING_YARN = 2;
+
+// ============================================================================
+// Low-level FFI declarations
+// ============================================================================
+
+// Backend initialization
+extern fn llama_backend_init(): void;
+extern fn llama_backend_free(): void;
+
+// Model loading/freeing
+extern fn llama_model_load_from_file(path: string, params: ptr): ptr;
+extern fn llama_model_free(model: ptr): void;
+extern fn llama_model_default_params(): ptr;
+
+// Context creation/freeing
+extern fn llama_init_from_model(model: ptr, params: ptr): ptr;
+extern fn llama_free(ctx: ptr): void;
+extern fn llama_context_default_params(): ptr;
+
+// Model info
+extern fn llama_model_n_ctx_train(model: ptr): i32;
+extern fn llama_model_n_embd(model: ptr): i32;
+extern fn llama_model_n_layer(model: ptr): i32;
+extern fn llama_model_n_head(model: ptr): i32;
+extern fn llama_model_size(model: ptr): u64;
+extern fn llama_model_n_params(model: ptr): u64;
+extern fn llama_model_desc(model: ptr, buf: ptr, buf_size: u64): i32;
+extern fn llama_model_has_encoder(model: ptr): i32;
+extern fn llama_model_has_decoder(model: ptr): i32;
+extern fn llama_model_is_recurrent(model: ptr): i32;
+
+// Vocab access
+extern fn llama_model_get_vocab(model: ptr): ptr;
+extern fn llama_vocab_n_tokens(vocab: ptr): i32;
+extern fn llama_vocab_type(vocab: ptr): i32;
+extern fn llama_vocab_bos(vocab: ptr): i32;
+extern fn llama_vocab_eos(vocab: ptr): i32;
+extern fn llama_vocab_eot(vocab: ptr): i32;
+extern fn llama_vocab_nl(vocab: ptr): i32;
+extern fn llama_vocab_pad(vocab: ptr): i32;
+extern fn llama_vocab_is_eog(vocab: ptr, token: i32): i32;
+extern fn llama_vocab_is_control(vocab: ptr, token: i32): i32;
+extern fn llama_vocab_get_text(vocab: ptr, token: i32): ptr;
+extern fn llama_vocab_get_add_bos(vocab: ptr): i32;
+extern fn llama_vocab_get_add_eos(vocab: ptr): i32;
+
+// Tokenization
+extern fn llama_tokenize(vocab: ptr, text: string, text_len: i32, tokens: ptr, n_tokens_max: i32, add_special: i32, parse_special: i32): i32;
+extern fn llama_token_to_piece(vocab: ptr, token: i32, buf: ptr, length: i32, lstrip: i32, special: i32): i32;
+extern fn llama_detokenize(vocab: ptr, tokens: ptr, n_tokens: i32, text: ptr, text_len_max: i32, remove_special: i32, unparse_special: i32): i32;
+
+// Context info
+extern fn llama_n_ctx(ctx: ptr): u32;
+extern fn llama_n_batch(ctx: ptr): u32;
+extern fn llama_n_ubatch(ctx: ptr): u32;
+extern fn llama_n_seq_max(ctx: ptr): u32;
+extern fn llama_get_model(ctx: ptr): ptr;
+
+// Batch operations
+extern fn llama_batch_get_one(tokens: ptr, n_tokens: i32): ptr;
+extern fn llama_batch_init(n_tokens: i32, embd: i32, n_seq_max: i32): ptr;
+extern fn llama_batch_free(batch: ptr): void;
+
+// Decode/encode
+extern fn llama_decode(ctx: ptr, batch: ptr): i32;
+extern fn llama_encode(ctx: ptr, batch: ptr): i32;
+
+// Logits/embeddings
+extern fn llama_get_logits(ctx: ptr): ptr;
+extern fn llama_get_logits_ith(ctx: ptr, i: i32): ptr;
+extern fn llama_get_embeddings(ctx: ptr): ptr;
+extern fn llama_get_embeddings_ith(ctx: ptr, i: i32): ptr;
+
+// Threading
+extern fn llama_set_n_threads(ctx: ptr, n_threads: i32, n_threads_batch: i32): void;
+extern fn llama_n_threads(ctx: ptr): i32;
+extern fn llama_n_threads_batch(ctx: ptr): i32;
+
+// Synchronization
+extern fn llama_synchronize(ctx: ptr): void;
+
+// Memory/KV cache
+extern fn llama_get_memory(ctx: ptr): ptr;
+extern fn llama_memory_clear(mem: ptr, data: i32): void;
+extern fn llama_memory_seq_rm(mem: ptr, seq_id: i32, p0: i32, p1: i32): i32;
+extern fn llama_memory_seq_cp(mem: ptr, seq_id_src: i32, seq_id_dst: i32, p0: i32, p1: i32): void;
+extern fn llama_memory_seq_keep(mem: ptr, seq_id: i32): void;
+extern fn llama_memory_seq_add(mem: ptr, seq_id: i32, p0: i32, p1: i32, delta: i32): void;
+extern fn llama_memory_seq_pos_min(mem: ptr, seq_id: i32): i32;
+extern fn llama_memory_seq_pos_max(mem: ptr, seq_id: i32): i32;
+
+// Sampler chain
+extern fn llama_sampler_chain_default_params(): ptr;
+extern fn llama_sampler_chain_init(params: ptr): ptr;
+extern fn llama_sampler_chain_add(chain: ptr, sampler: ptr): void;
+extern fn llama_sampler_chain_get(chain: ptr, i: i32): ptr;
+extern fn llama_sampler_chain_n(chain: ptr): i32;
+extern fn llama_sampler_chain_remove(chain: ptr, i: i32): ptr;
+extern fn llama_sampler_free(sampler: ptr): void;
+extern fn llama_sampler_reset(sampler: ptr): void;
+extern fn llama_sampler_clone(sampler: ptr): ptr;
+extern fn llama_sampler_name(sampler: ptr): ptr;
+
+// Sampler types
+extern fn llama_sampler_init_greedy(): ptr;
+extern fn llama_sampler_init_dist(seed: u32): ptr;
+extern fn llama_sampler_init_top_k(k: i32): ptr;
+extern fn llama_sampler_init_top_p(p: f32, min_keep: u64): ptr;
+extern fn llama_sampler_init_min_p(p: f32, min_keep: u64): ptr;
+extern fn llama_sampler_init_typical(p: f32, min_keep: u64): ptr;
+extern fn llama_sampler_init_temp(t: f32): ptr;
+extern fn llama_sampler_init_temp_ext(t: f32, delta: f32, exponent: f32): ptr;
+extern fn llama_sampler_init_mirostat(n_vocab: i32, seed: u32, tau: f32, eta: f32, m: i32): ptr;
+extern fn llama_sampler_init_mirostat_v2(seed: u32, tau: f32, eta: f32): ptr;
+extern fn llama_sampler_init_penalties(penalty_last_n: i32, penalty_repeat: f32, penalty_freq: f32, penalty_present: f32): ptr;
+
+// Sampling
+extern fn llama_sampler_sample(sampler: ptr, ctx: ptr, idx: i32): i32;
+extern fn llama_sampler_accept(sampler: ptr, token: i32): void;
+extern fn llama_sampler_apply(sampler: ptr, cur_p: ptr): void;
+extern fn llama_sampler_get_seed(sampler: ptr): u32;
+
+// Chat templates
+extern fn llama_model_chat_template(model: ptr, name: ptr): ptr;
+extern fn llama_chat_apply_template(tmpl: ptr, chat: ptr, n_msg: u64, add_ass: i32, buf: ptr, length: i32): i32;
+
+// Utilities
+extern fn llama_time_us(): i64;
+extern fn llama_print_system_info(): ptr;
+extern fn llama_max_devices(): u64;
+extern fn llama_supports_mmap(): i32;
+extern fn llama_supports_mlock(): i32;
+extern fn llama_supports_gpu_offload(): i32;
+
+// Performance
+extern fn llama_perf_context_print(ctx: ptr): void;
+extern fn llama_perf_context_reset(ctx: ptr): void;
+extern fn llama_perf_sampler_print(chain: ptr): void;
+extern fn llama_perf_sampler_reset(chain: ptr): void;
+
+// ============================================================================
+// High-level API
+// ============================================================================
+
+// Initialize the llama backend (call once at program start)
+export fn backend_init() {
+    llama_backend_init();
+}
+
+// Free the llama backend (call once at program end)
+export fn backend_free() {
+    llama_backend_free();
+}
+
+// Get system info string
+export fn system_info(): string {
+    let info_ptr = llama_print_system_info();
+    return ptr_to_string(info_ptr);
+}
+
+// Check GPU support
+export fn supports_gpu(): bool {
+    return llama_supports_gpu_offload() != 0;
+}
+
+// ============================================================================
+// Model functions
+// ============================================================================
+
+// Load a model from a GGUF file
+// Options:
+//   n_gpu_layers: number of layers to offload to GPU (default: 0)
+//   use_mmap: use memory mapping (default: true)
+//   use_mlock: lock model in RAM (default: false)
+export fn model_load(path: string, options): ptr {
+    let opts = options || {};
+
+    // Allocate model params struct (size from llama.cpp)
+    // struct llama_model_params is approximately 120 bytes
+    let params = alloc(128);
+    memset(params, 0, 128);
+
+    // Set defaults - these offsets are based on the struct layout
+    // n_gpu_layers at offset 16 (after two pointers)
+    let n_gpu_layers = opts.n_gpu_layers || 0;
+    ptr_write_i32(ptr_offset(params, 16, 1), n_gpu_layers);
+
+    // split_mode at offset 20
+    let split_mode = opts.split_mode || SPLIT_MODE_NONE;
+    ptr_write_i32(ptr_offset(params, 20, 1), split_mode);
+
+    // main_gpu at offset 24
+    let main_gpu = opts.main_gpu || 0;
+    ptr_write_i32(ptr_offset(params, 24, 1), main_gpu);
+
+    // Boolean flags start at offset 72
+    // vocab_only, use_mmap, use_mlock, check_tensors
+    let use_mmap = opts.use_mmap != false ? 1 : 0;  // default true
+    let use_mlock = opts.use_mlock == true ? 1 : 0;  // default false
+
+    // Set booleans (they're packed as single bytes)
+    ptr_write_u8(ptr_offset(params, 72, 1), 0);  // vocab_only = false
+    ptr_write_u8(ptr_offset(params, 73, 1), use_mmap);
+    ptr_write_u8(ptr_offset(params, 74, 1), use_mlock);
+
+    let model = llama_model_load_from_file(path, params);
+    free(params);
+
+    if (model == null) {
+        throw "Failed to load model: " + path;
+    }
+
+    return model;
+}
+
+// Free a model
+export fn model_free(model: ptr) {
+    if (model != null) {
+        llama_model_free(model);
+    }
+}
+
+// Get model info
+export fn model_info(model: ptr): object {
+    let desc_buf = alloc(256);
+    llama_model_desc(model, desc_buf, 256);
+    let desc = ptr_to_string(desc_buf);
+    free(desc_buf);
+
+    return {
+        description: desc,
+        n_ctx_train: llama_model_n_ctx_train(model),
+        n_embd: llama_model_n_embd(model),
+        n_layer: llama_model_n_layer(model),
+        n_head: llama_model_n_head(model),
+        size: llama_model_size(model),
+        n_params: llama_model_n_params(model),
+        has_encoder: llama_model_has_encoder(model) != 0,
+        has_decoder: llama_model_has_decoder(model) != 0,
+        is_recurrent: llama_model_is_recurrent(model) != 0
+    };
+}
+
+// Get the model's vocabulary
+export fn model_vocab(model: ptr): ptr {
+    return llama_model_get_vocab(model);
+}
+
+// ============================================================================
+// Context functions
+// ============================================================================
+
+// Create a context from a model
+// Options:
+//   n_ctx: context size (default: from model)
+//   n_batch: batch size (default: 2048)
+//   n_threads: number of threads (default: auto)
+//   embeddings: extract embeddings (default: false)
+export fn context_create(model: ptr, options): ptr {
+    let opts = options || {};
+
+    // Allocate context params struct (approximately 160 bytes)
+    let params = alloc(168);
+    memset(params, 0, 168);
+
+    // n_ctx at offset 0
+    let n_ctx = opts.n_ctx || 0;  // 0 = from model
+    ptr_write_u32(params, n_ctx);
+
+    // n_batch at offset 4
+    let n_batch = opts.n_batch || 2048;
+    ptr_write_u32(ptr_offset(params, 4, 1), n_batch);
+
+    // n_ubatch at offset 8
+    let n_ubatch = opts.n_ubatch || 512;
+    ptr_write_u32(ptr_offset(params, 8, 1), n_ubatch);
+
+    // n_seq_max at offset 12
+    let n_seq_max = opts.n_seq_max || 1;
+    ptr_write_u32(ptr_offset(params, 12, 1), n_seq_max);
+
+    // n_threads at offset 16
+    let n_threads = opts.n_threads || 0;  // 0 = auto
+    ptr_write_i32(ptr_offset(params, 16, 1), n_threads);
+
+    // n_threads_batch at offset 20
+    let n_threads_batch = opts.n_threads_batch || n_threads;
+    ptr_write_i32(ptr_offset(params, 20, 1), n_threads_batch);
+
+    // enum values (rope_scaling_type, pooling_type, attention_type, flash_attn_type)
+    // These start at offset 24 and are 4 bytes each
+    ptr_write_i32(ptr_offset(params, 24, 1), -1);  // UNSPECIFIED
+    ptr_write_i32(ptr_offset(params, 28, 1), -1);  // UNSPECIFIED
+    ptr_write_i32(ptr_offset(params, 32, 1), -1);  // UNSPECIFIED
+    ptr_write_i32(ptr_offset(params, 36, 1), -1);  // AUTO
+
+    // Boolean flags at the end
+    let embeddings = opts.embeddings == true ? 1 : 0;
+    ptr_write_u8(ptr_offset(params, 152, 1), embeddings);
+    ptr_write_u8(ptr_offset(params, 153, 1), 1);  // offload_kqv = true
+
+    let ctx = llama_init_from_model(model, params);
+    free(params);
+
+    if (ctx == null) {
+        throw "Failed to create context";
+    }
+
+    return ctx;
+}
+
+// Free a context
+export fn context_free(ctx: ptr) {
+    if (ctx != null) {
+        llama_free(ctx);
+    }
+}
+
+// Get context info
+export fn context_info(ctx: ptr): object {
+    return {
+        n_ctx: llama_n_ctx(ctx),
+        n_batch: llama_n_batch(ctx),
+        n_ubatch: llama_n_ubatch(ctx),
+        n_seq_max: llama_n_seq_max(ctx),
+        n_threads: llama_n_threads(ctx),
+        n_threads_batch: llama_n_threads_batch(ctx)
+    };
+}
+
+// Set number of threads
+export fn set_threads(ctx: ptr, n_threads: i32, n_threads_batch: i32) {
+    llama_set_n_threads(ctx, n_threads, n_threads_batch || n_threads);
+}
+
+// ============================================================================
+// Tokenization functions
+// ============================================================================
+
+// Tokenize text into token IDs
+// Options:
+//   add_special: add BOS/EOS tokens (default: true)
+//   parse_special: parse special tokens in text (default: false)
+export fn tokenize(model: ptr, text: string, options): array {
+    let opts = options || {};
+    let add_special = opts.add_special != false ? 1 : 0;
+    let parse_special = opts.parse_special == true ? 1 : 0;
+
+    let vocab = llama_model_get_vocab(model);
+    let text_len = text.byte_length;
+
+    // Estimate token count (roughly 4 chars per token)
+    let max_tokens = text_len + 16;
+    let tokens_buf = alloc(max_tokens * 4);  // i32 = 4 bytes
+
+    let n_tokens = llama_tokenize(vocab, text, text_len, tokens_buf, max_tokens, add_special, parse_special);
+
+    if (n_tokens < 0) {
+        // Buffer too small, reallocate
+        free(tokens_buf);
+        max_tokens = -n_tokens + 16;
+        tokens_buf = alloc(max_tokens * 4);
+        n_tokens = llama_tokenize(vocab, text, text_len, tokens_buf, max_tokens, add_special, parse_special);
+    }
+
+    if (n_tokens < 0) {
+        free(tokens_buf);
+        throw "Tokenization failed";
+    }
+
+    // Convert to array
+    let tokens = [];
+    for (let i = 0; i < n_tokens; i = i + 1) {
+        tokens.push(ptr_deref_i32(ptr_offset(tokens_buf, i, 4)));
+    }
+
+    free(tokens_buf);
+    return tokens;
+}
+
+// Detokenize token IDs back to text
+// Options:
+//   remove_special: remove BOS/EOS tokens (default: false)
+//   unparse_special: render special tokens (default: true)
+export fn detokenize(model: ptr, tokens: array, options): string {
+    let opts = options || {};
+    let remove_special = opts.remove_special == true ? 1 : 0;
+    let unparse_special = opts.unparse_special != false ? 1 : 0;
+
+    let vocab = llama_model_get_vocab(model);
+    let n_tokens = tokens.length;
+
+    // Create token buffer
+    let tokens_buf = alloc(n_tokens * 4);
+    for (let i = 0; i < n_tokens; i = i + 1) {
+        ptr_write_i32(ptr_offset(tokens_buf, i, 4), tokens[i]);
+    }
+
+    // Estimate output size (roughly 8 chars per token)
+    let max_len = n_tokens * 16 + 64;
+    let text_buf = alloc(max_len);
+
+    let text_len = llama_detokenize(vocab, tokens_buf, n_tokens, text_buf, max_len, remove_special, unparse_special);
+
+    if (text_len < 0) {
+        // Buffer too small
+        free(text_buf);
+        max_len = -text_len + 64;
+        text_buf = alloc(max_len);
+        text_len = llama_detokenize(vocab, tokens_buf, n_tokens, text_buf, max_len, remove_special, unparse_special);
+    }
+
+    free(tokens_buf);
+
+    if (text_len < 0) {
+        free(text_buf);
+        throw "Detokenization failed";
+    }
+
+    let result = ptr_to_string_n(text_buf, text_len);
+    free(text_buf);
+    return result;
+}
+
+// Convert a single token to its text piece
+export fn token_to_piece(model: ptr, token: i32, special: bool): string {
+    let vocab = llama_model_get_vocab(model);
+    let buf = alloc(64);
+
+    let len = llama_token_to_piece(vocab, token, buf, 64, 0, special == true ? 1 : 0);
+
+    if (len < 0) {
+        free(buf);
+        return "";
+    }
+
+    let result = ptr_to_string_n(buf, len);
+    free(buf);
+    return result;
+}
+
+// Get vocabulary info
+export fn vocab_info(model: ptr): object {
+    let vocab = llama_model_get_vocab(model);
+    return {
+        n_tokens: llama_vocab_n_tokens(vocab),
+        type: llama_vocab_type(vocab),
+        bos_token: llama_vocab_bos(vocab),
+        eos_token: llama_vocab_eos(vocab),
+        eot_token: llama_vocab_eot(vocab),
+        nl_token: llama_vocab_nl(vocab),
+        pad_token: llama_vocab_pad(vocab),
+        add_bos: llama_vocab_get_add_bos(vocab) != 0,
+        add_eos: llama_vocab_get_add_eos(vocab) != 0
+    };
+}
+
+// Check if token is end-of-generation
+export fn is_eog(model: ptr, token: i32): bool {
+    let vocab = llama_model_get_vocab(model);
+    return llama_vocab_is_eog(vocab, token) != 0;
+}
+
+// ============================================================================
+// Sampling functions
+// ============================================================================
+
+// Create a sampler chain with common settings
+// Options:
+//   top_k: top-k sampling (default: 40)
+//   top_p: nucleus sampling (default: 0.95)
+//   min_p: minimum probability (default: 0.05)
+//   temp: temperature (default: 0.8)
+//   repeat_penalty: repetition penalty (default: 1.1)
+//   repeat_last_n: tokens to consider for penalty (default: 64)
+//   seed: random seed (default: random)
+export fn sampler_create(options): ptr {
+    let opts = options || {};
+
+    // Get default chain params
+    let chain_params = alloc(8);
+    memset(chain_params, 0, 8);
+
+    let chain = llama_sampler_chain_init(chain_params);
+    free(chain_params);
+
+    if (chain == null) {
+        throw "Failed to create sampler chain";
+    }
+
+    // Add penalties if specified
+    let repeat_penalty = opts.repeat_penalty || 1.1;
+    let repeat_last_n = opts.repeat_last_n || 64;
+    if (repeat_penalty != 1.0) {
+        let freq_penalty = opts.freq_penalty || 0.0;
+        let presence_penalty = opts.presence_penalty || 0.0;
+        let penalties = llama_sampler_init_penalties(repeat_last_n, repeat_penalty, freq_penalty, presence_penalty);
+        llama_sampler_chain_add(chain, penalties);
+    }
+
+    // Add top-k
+    let top_k = opts.top_k || 40;
+    if (top_k > 0) {
+        let top_k_sampler = llama_sampler_init_top_k(top_k);
+        llama_sampler_chain_add(chain, top_k_sampler);
+    }
+
+    // Add top-p
+    let top_p = opts.top_p || 0.95;
+    if (top_p < 1.0) {
+        let top_p_sampler = llama_sampler_init_top_p(top_p, 1);
+        llama_sampler_chain_add(chain, top_p_sampler);
+    }
+
+    // Add min-p
+    let min_p = opts.min_p || 0.05;
+    if (min_p > 0.0) {
+        let min_p_sampler = llama_sampler_init_min_p(min_p, 1);
+        llama_sampler_chain_add(chain, min_p_sampler);
+    }
+
+    // Add temperature
+    let temp = opts.temp || 0.8;
+    if (temp > 0.0) {
+        let temp_sampler = llama_sampler_init_temp(temp);
+        llama_sampler_chain_add(chain, temp_sampler);
+    }
+
+    // Add distribution sampler (final selection)
+    let seed = opts.seed || DEFAULT_SEED;
+    let dist = llama_sampler_init_dist(seed);
+    llama_sampler_chain_add(chain, dist);
+
+    return chain;
+}
+
+// Create a greedy sampler (always picks highest probability)
+export fn sampler_greedy(): ptr {
+    let chain_params = alloc(8);
+    memset(chain_params, 0, 8);
+    let chain = llama_sampler_chain_init(chain_params);
+    free(chain_params);
+
+    let greedy = llama_sampler_init_greedy();
+    llama_sampler_chain_add(chain, greedy);
+
+    return chain;
+}
+
+// Free a sampler
+export fn sampler_free(sampler: ptr) {
+    if (sampler != null) {
+        llama_sampler_free(sampler);
+    }
+}
+
+// Reset sampler state
+export fn sampler_reset(sampler: ptr) {
+    llama_sampler_reset(sampler);
+}
+
+// Sample a token
+export fn sample(sampler: ptr, ctx: ptr, idx: i32): i32 {
+    return llama_sampler_sample(sampler, ctx, idx);
+}
+
+// Accept a token (for tracking in penalties, etc.)
+export fn sampler_accept(sampler: ptr, token: i32) {
+    llama_sampler_accept(sampler, token);
+}
+
+// ============================================================================
+// Inference functions
+// ============================================================================
+
+// Decode a batch of tokens
+// Returns: 0 on success, 1 if no KV slot available, negative on error
+export fn decode(ctx: ptr, tokens: array, pos: i32): i32 {
+    let n_tokens = tokens.length;
+
+    // Create tokens buffer
+    let tokens_buf = alloc(n_tokens * 4);
+    for (let i = 0; i < n_tokens; i = i + 1) {
+        ptr_write_i32(ptr_offset(tokens_buf, i, 4), tokens[i]);
+    }
+
+    // Create batch using llama_batch_get_one for simple single-sequence use
+    // The batch struct is 48 bytes
+    let batch = alloc(48);
+    memset(batch, 0, 48);
+
+    // n_tokens at offset 0
+    ptr_write_i32(batch, n_tokens);
+    // token pointer at offset 8 (after padding)
+    ptr_write_ptr(ptr_offset(batch, 8, 1), tokens_buf);
+
+    let result = llama_decode(ctx, batch);
+
+    free(batch);
+    free(tokens_buf);
+
+    return result;
+}
+
+// Decode a single batch (simpler interface)
+export fn decode_batch(ctx: ptr, tokens: array): i32 {
+    return decode(ctx, tokens, 0);
+}
+
+// Get logits for the last token
+export fn get_logits(ctx: ptr): ptr {
+    return llama_get_logits_ith(ctx, -1);
+}
+
+// Get logits for a specific token index
+export fn get_logits_ith(ctx: ptr, i: i32): ptr {
+    return llama_get_logits_ith(ctx, i);
+}
+
+// Synchronize (wait for async operations)
+export fn synchronize(ctx: ptr) {
+    llama_synchronize(ctx);
+}
+
+// ============================================================================
+// KV Cache/Memory functions
+// ============================================================================
+
+// Clear the KV cache
+export fn kv_cache_clear(ctx: ptr) {
+    let mem = llama_get_memory(ctx);
+    llama_memory_clear(mem, 1);
+}
+
+// Remove tokens from a sequence
+export fn kv_cache_seq_rm(ctx: ptr, seq_id: i32, p0: i32, p1: i32): bool {
+    let mem = llama_get_memory(ctx);
+    return llama_memory_seq_rm(mem, seq_id, p0, p1) != 0;
+}
+
+// Copy a sequence
+export fn kv_cache_seq_cp(ctx: ptr, seq_id_src: i32, seq_id_dst: i32, p0: i32, p1: i32) {
+    let mem = llama_get_memory(ctx);
+    llama_memory_seq_cp(mem, seq_id_src, seq_id_dst, p0, p1);
+}
+
+// Keep only one sequence
+export fn kv_cache_seq_keep(ctx: ptr, seq_id: i32) {
+    let mem = llama_get_memory(ctx);
+    llama_memory_seq_keep(mem, seq_id);
+}
+
+// Shift token positions
+export fn kv_cache_seq_add(ctx: ptr, seq_id: i32, p0: i32, p1: i32, delta: i32) {
+    let mem = llama_get_memory(ctx);
+    llama_memory_seq_add(mem, seq_id, p0, p1, delta);
+}
+
+// Get min position in sequence
+export fn kv_cache_seq_pos_min(ctx: ptr, seq_id: i32): i32 {
+    let mem = llama_get_memory(ctx);
+    return llama_memory_seq_pos_min(mem, seq_id);
+}
+
+// Get max position in sequence
+export fn kv_cache_seq_pos_max(ctx: ptr, seq_id: i32): i32 {
+    let mem = llama_get_memory(ctx);
+    return llama_memory_seq_pos_max(mem, seq_id);
+}
+
+// ============================================================================
+// Performance functions
+// ============================================================================
+
+// Print context performance stats
+export fn perf_print(ctx: ptr) {
+    llama_perf_context_print(ctx);
+}
+
+// Reset context performance stats
+export fn perf_reset(ctx: ptr) {
+    llama_perf_context_reset(ctx);
+}
+
+// Print sampler performance stats
+export fn perf_sampler_print(sampler: ptr) {
+    llama_perf_sampler_print(sampler);
+}
+
+// Get current time in microseconds
+export fn time_us(): i64 {
+    return llama_time_us();
+}
+
+// ============================================================================
+// Convenience/High-level functions
+// ============================================================================
+
+// Generate text from a prompt
+// Options:
+//   n_predict: max tokens to generate (default: 128)
+//   sampler: sampler to use (default: create with temp=0.8)
+//   stop_tokens: array of stop tokens (default: [eos])
+//   callback: function called for each token (optional)
+export fn generate(ctx: ptr, model: ptr, prompt: string, options): string {
+    let opts = options || {};
+    let n_predict = opts.n_predict || 128;
+
+    // Tokenize prompt
+    let tokens = tokenize(model, prompt, { add_special: true });
+
+    // Decode prompt
+    let result = decode(ctx, tokens, 0);
+    if (result != 0) {
+        throw "Failed to decode prompt: " + result;
+    }
+
+    // Create or use provided sampler
+    let sampler = opts.sampler;
+    let own_sampler = false;
+    if (sampler == null) {
+        sampler = sampler_create(opts);
+        own_sampler = true;
+    }
+
+    // Get stop tokens
+    let vocab = model_vocab(model);
+    let eos_token = llama_vocab_eos(vocab);
+    let stop_tokens = opts.stop_tokens || [eos_token];
+
+    // Generate tokens
+    let output_tokens = [];
+    let n_cur = tokens.length;
+
+    for (let i = 0; i < n_predict; i = i + 1) {
+        // Sample next token
+        let token = sample(sampler, ctx, -1);
+
+        // Check for stop tokens
+        let should_stop = false;
+        for (let j = 0; j < stop_tokens.length; j = j + 1) {
+            if (token == stop_tokens[j]) {
+                should_stop = true;
+                break;
+            }
+        }
+
+        if (should_stop) {
+            break;
+        }
+
+        // Check for end-of-generation
+        if (is_eog(model, token)) {
+            break;
+        }
+
+        output_tokens.push(token);
+
+        // Callback if provided
+        if (opts.callback) {
+            let piece = token_to_piece(model, token, false);
+            let should_continue = opts.callback(token, piece);
+            if (should_continue == false) {
+                break;
+            }
+        }
+
+        // Decode the new token
+        result = decode(ctx, [token], n_cur);
+        if (result != 0) {
+            break;
+        }
+
+        n_cur = n_cur + 1;
+    }
+
+    // Cleanup
+    if (own_sampler) {
+        sampler_free(sampler);
+    }
+
+    // Detokenize output
+    return detokenize(model, output_tokens, { remove_special: true });
+}
+
+// Simple completion interface
+export fn complete(model_path: string, prompt: string, options): string {
+    let opts = options || {};
+
+    backend_init();
+
+    let model = model_load(model_path, {
+        n_gpu_layers: opts.n_gpu_layers || 0
+    });
+
+    let ctx = context_create(model, {
+        n_ctx: opts.n_ctx || 2048,
+        n_threads: opts.n_threads || 0
+    });
+
+    let result = generate(ctx, model, prompt, opts);
+
+    context_free(ctx);
+    model_free(model);
+    backend_free();
+
+    return result;
+}
+
+// ============================================================================
+// Helper functions for pointer operations
+// ============================================================================
+
+fn ptr_to_string(ptr: ptr): string {
+    if (ptr == null) {
+        return "";
+    }
+    // Read null-terminated string from pointer
+    let result = "";
+    let offset = 0;
+    while (true) {
+        let byte = ptr_deref_u8(ptr_offset(ptr, offset, 1));
+        if (byte == 0) {
+            break;
+        }
+        result = result + rune_to_string(byte);
+        offset = offset + 1;
+        if (offset > 4096) {
+            break;  // Safety limit
+        }
+    }
+    return result;
+}
+
+fn ptr_to_string_n(ptr: ptr, len: i32): string {
+    if (ptr == null || len <= 0) {
+        return "";
+    }
+    let result = "";
+    for (let i = 0; i < len; i = i + 1) {
+        let byte = ptr_deref_u8(ptr_offset(ptr, i, 1));
+        result = result + rune_to_string(byte);
+    }
+    return result;
+}
+
+fn ptr_write_ptr(dest: ptr, value: ptr) {
+    // Write a pointer value (8 bytes on 64-bit)
+    ptr_write_u64(dest, value);
+}
+
+fn rune_to_string(r: i32): string {
+    // Convert a byte/rune to a string
+    return string_from_bytes([r]);
+}
