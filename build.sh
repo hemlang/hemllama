@@ -29,11 +29,20 @@ cmake --build . --config Release -j$(nproc)
 mkdir -p "$LIB_DIR"
 
 # Find and copy the shared library (different names on different platforms)
-if [ -f "$BUILD_DIR/src/libllama.so" ]; then
+# Check bin directory first (newer llama.cpp), then src directory (older versions)
+if [ -f "$BUILD_DIR/bin/libllama.so" ]; then
+    cp "$BUILD_DIR/bin/libllama.so"* "$LIB_DIR/"
+    cp "$BUILD_DIR/bin/libggml.so"* "$LIB_DIR/" 2>/dev/null || true
+    cp "$BUILD_DIR/bin/libggml-base.so"* "$LIB_DIR/" 2>/dev/null || true
+    cp "$BUILD_DIR/bin/libggml-cpu.so"* "$LIB_DIR/" 2>/dev/null || true
+elif [ -f "$BUILD_DIR/src/libllama.so" ]; then
     cp "$BUILD_DIR/src/libllama.so"* "$LIB_DIR/"
     cp "$BUILD_DIR/ggml/src/libggml.so"* "$LIB_DIR/" 2>/dev/null || true
     cp "$BUILD_DIR/ggml/src/libggml-base.so"* "$LIB_DIR/" 2>/dev/null || true
     cp "$BUILD_DIR/ggml/src/libggml-cpu.so"* "$LIB_DIR/" 2>/dev/null || true
+elif [ -f "$BUILD_DIR/bin/libllama.dylib" ]; then
+    cp "$BUILD_DIR/bin/libllama.dylib" "$LIB_DIR/"
+    cp "$BUILD_DIR/bin/libggml"*.dylib "$LIB_DIR/" 2>/dev/null || true
 elif [ -f "$BUILD_DIR/src/libllama.dylib" ]; then
     cp "$BUILD_DIR/src/libllama.dylib" "$LIB_DIR/"
     cp "$BUILD_DIR/ggml/src/libggml"*.dylib "$LIB_DIR/" 2>/dev/null || true

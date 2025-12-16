@@ -1,0 +1,16 @@
+# Build outputs
+lib/
+*.so
+*.dylib
+*.dll
+
+# Build directory
+llama.cpp/build/
+
+# Test outputs
+*.log
+
+# Editor/IDE
+.vscode/
+*.swp
+*~

@@ -858,45 +858,40 @@ export fn complete(model_path: string, prompt: string, options): string {
 // Helper functions for pointer operations
 // ============================================================================
 
-fn ptr_to_string(ptr: ptr): string {
-    if (ptr == null) {
+fn ptr_to_string(p: ptr): string {
+    if (p == null) {
         return "";
     }
-    // Read null-terminated string from pointer
-    let result = "";
+    // Read null-terminated string from pointer into byte array
+    let bytes = [];
     let offset = 0;
     while (true) {
-        let byte = ptr_deref_u8(ptr_offset(ptr, offset, 1));
-        if (byte == 0) {
+        let b = ptr_deref_u8(ptr_offset(p, offset, 1));
+        if (b == 0) {
             break;
         }
-        result = result + rune_to_string(byte);
+        bytes.push(b);
         offset = offset + 1;
         if (offset > 4096) {
             break;  // Safety limit
         }
     }
-    return result;
+    return __string_from_bytes(bytes);
 }
 
-fn ptr_to_string_n(ptr: ptr, len: i32): string {
-    if (ptr == null || len <= 0) {
+fn ptr_to_string_n(p: ptr, len: i32): string {
+    if (p == null || len <= 0) {
         return "";
     }
-    let result = "";
+    let bytes = [];
     for (let i = 0; i < len; i = i + 1) {
-        let byte = ptr_deref_u8(ptr_offset(ptr, i, 1));
-        result = result + rune_to_string(byte);
+        let b = ptr_deref_u8(ptr_offset(p, i, 1));
+        bytes.push(b);
     }
-    return result;
+    return __string_from_bytes(bytes);
 }
 
-fn ptr_write_ptr(dest: ptr, value: ptr) {
+fn ptr_write_ptr(dest: ptr, val: ptr) {
     // Write a pointer value (8 bytes on 64-bit)
-    ptr_write_u64(dest, value);
-}
-
-fn rune_to_string(r: i32): string {
-    // Convert a byte/rune to a string
-    return string_from_bytes([r]);
+    ptr_write_u64(dest, val);
 }

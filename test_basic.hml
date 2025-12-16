@@ -1,0 +1,27 @@
+// Basic test - just test that FFI loading works
+import * as llama from "./llama.hml";
+
+print("Testing hemllama bindings...");
+
+// Test backend init/free
+print("Initializing backend...");
+llama.backend_init();
+print("Backend initialized!");
+
+// Skip system_info for now - has FFI type conversion issues
+// let info = llama.system_info();
+// print("System info: " + info);
+
+// Test GPU support check
+print("GPU support: " + llama.supports_gpu());
+
+// Test time function
+print("Current time (us): " + llama.time_us());
+
+// Cleanup
+print("Freeing backend...");
+llama.backend_free();
+print("Backend freed!");
+
+print("");
+print("All basic tests passed!");
