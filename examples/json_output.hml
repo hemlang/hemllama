@@ -1,0 +1,87 @@
+// json_output.hml - Generate structured JSON output using grammar constraints
+//
+// Usage:
+//   hemlock examples/json_output.hml <model.gguf> "<prompt>"
+//
+// Example:
+//   hemlock examples/json_output.hml ~/models/llama.gguf "List 3 programming languages with name and year"
+
+import * as llama from "../llama.hml";
+
+fn main() {
+    let args = __args();
+    if (args.length < 3) {
+        print("Usage: hemlock examples/json_output.hml <model.gguf> \"<prompt>\"");
+        return;
+    }
+
+    let model_path = args[1];
+    let prompt = args[2];
+
+    print("Loading model: " + model_path);
+    llama.backend_init();
+
+    let model = llama.model_load(model_path, {
+        n_gpu_layers: llama.supports_gpu() ? 99 : 0
+    });
+
+    print("Model loaded: " + llama.model_info(model).description);
+
+    let ctx = llama.context_create(model, {
+        n_ctx: 2048,
+        n_batch: 512
+    });
+
+    // Create a sampler with JSON grammar constraint
+    let sampler = llama.sampler_create_with_grammar(model, {
+        grammar: llama.GRAMMAR_JSON,
+        grammar_root: "root",
+        temp: 0.7,
+        top_k: 40,
+        top_p: 0.9
+    });
+
+    // Format the prompt to request JSON output
+    let full_prompt = "You are a helpful assistant that responds only in valid JSON.\n\n" +
+        "User: " + prompt + "\n\n" +
+        "Respond with a JSON object or array:\n";
+
+    print("\nPrompt: " + prompt);
+    print("\nGenerating JSON response...\n");
+
+    // Tokenize and decode prompt
+    let tokens = llama.tokenize(model, full_prompt, { add_special: true });
+    llama.decode(ctx, tokens, 0);
+
+    // Generate tokens
+    let output_tokens = [];
+    let n_cur = tokens.length;
+    let max_tokens = 512;
+
+    for (let i = 0; i < max_tokens; i = i + 1) {
+        let token = llama.sample(sampler, ctx, -1);
+
+        if (llama.is_eog(model, token)) {
+            break;
+        }
+
+        output_tokens.push(token);
+        let piece = llama.token_to_piece(model, token, false);
+        print_inline(piece);
+
+        llama.decode(ctx, [token], n_cur);
+        n_cur = n_cur + 1;
+    }
+
+    print("\n");
+
+    // Cleanup
+    llama.sampler_free(sampler);
+    llama.context_free(ctx);
+    llama.model_free(model);
+    llama.backend_free();
+
+    print("\nDone!");
+}
+
+main();

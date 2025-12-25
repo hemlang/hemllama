@@ -45,6 +45,29 @@ export let ROPE_SCALING_UNSPECIFIED = -1;
 export let ROPE_SCALING_NONE = 0;
 export let ROPE_SCALING_LINEAR = 1;
 export let ROPE_SCALING_YARN = 2;
+export let ROPE_SCALING_LONGROPE = 3;
+
+// Token types
+export let TOKEN_TYPE_UNDEFINED = 0;
+export let TOKEN_TYPE_NORMAL = 1;
+export let TOKEN_TYPE_UNKNOWN = 2;
+export let TOKEN_TYPE_CONTROL = 3;
+export let TOKEN_TYPE_USER_DEFINED = 4;
+export let TOKEN_TYPE_UNUSED = 5;
+export let TOKEN_TYPE_BYTE = 6;
+
+// Token attributes (bitflags)
+export let TOKEN_ATTR_UNDEFINED = 0;
+export let TOKEN_ATTR_UNKNOWN = 1;
+export let TOKEN_ATTR_UNUSED = 2;
+export let TOKEN_ATTR_NORMAL = 4;
+export let TOKEN_ATTR_CONTROL = 8;
+export let TOKEN_ATTR_USER_DEFINED = 16;
+export let TOKEN_ATTR_BYTE = 32;
+export let TOKEN_ATTR_NORMALIZED = 64;
+export let TOKEN_ATTR_LSTRIP = 128;
+export let TOKEN_ATTR_RSTRIP = 256;
+export let TOKEN_ATTR_SINGLE_WORD = 512;
 
 // ============================================================================
 // Low-level FFI declarations
@@ -184,6 +207,89 @@ extern fn llama_perf_context_print(ctx: ptr): void;
 extern fn llama_perf_context_reset(ctx: ptr): void;
 extern fn llama_perf_sampler_print(chain: ptr): void;
 extern fn llama_perf_sampler_reset(chain: ptr): void;
+
+// Grammar sampling
+extern fn llama_sampler_init_grammar(vocab: ptr, grammar_str: string, grammar_root: string): ptr;
+
+// Additional samplers
+extern fn llama_sampler_init_xtc(p: f32, t: f32, min_keep: u64, seed: u32): ptr;
+extern fn llama_sampler_init_top_n_sigma(n: f32): ptr;
+extern fn llama_sampler_init_dry(vocab: ptr, n_ctx_train: i32, dry_multiplier: f32, dry_base: f32, dry_allowed_length: i32, dry_penalty_last_n: i32, seq_breakers: ptr, num_breakers: u64): ptr;
+extern fn llama_sampler_init_logit_bias(n_vocab: i32, n_logit_bias: i32, logit_bias: ptr): ptr;
+extern fn llama_sampler_init_infill(vocab: ptr): ptr;
+
+// LoRA adapters
+extern fn llama_adapter_lora_init(model: ptr, path_lora: string): ptr;
+extern fn llama_adapter_lora_free(adapter: ptr): void;
+extern fn llama_set_adapter_lora(ctx: ptr, adapter: ptr, scale: f32): i32;
+extern fn llama_rm_adapter_lora(ctx: ptr, adapter: ptr): i32;
+extern fn llama_clear_adapter_lora(ctx: ptr): void;
+
+// Control vectors
+extern fn llama_apply_adapter_cvec(ctx: ptr, data: ptr, len: u64, n_embd: i32, il_start: i32, il_end: i32): i32;
+
+// State/session save/load
+extern fn llama_state_get_size(ctx: ptr): u64;
+extern fn llama_state_get_data(ctx: ptr, dst: ptr, size: u64): u64;
+extern fn llama_state_set_data(ctx: ptr, src: ptr, size: u64): u64;
+extern fn llama_state_save_file(ctx: ptr, path: string, tokens: ptr, n_token_count: u64): i32;
+extern fn llama_state_load_file(ctx: ptr, path: string, tokens_out: ptr, n_token_capacity: u64, n_token_count_out: ptr): i32;
+extern fn llama_state_seq_get_size(ctx: ptr, seq_id: i32): u64;
+extern fn llama_state_seq_get_data(ctx: ptr, dst: ptr, size: u64, seq_id: i32): u64;
+extern fn llama_state_seq_set_data(ctx: ptr, src: ptr, size: u64, seq_id: i32): u64;
+extern fn llama_state_seq_save_file(ctx: ptr, filepath: string, seq_id: i32, tokens: ptr, n_token_count: u64): u64;
+extern fn llama_state_seq_load_file(ctx: ptr, filepath: string, seq_id: i32, tokens_out: ptr, n_token_capacity: u64, n_token_count_out: ptr): u64;
+
+// Additional vocab functions
+extern fn llama_vocab_sep(vocab: ptr): i32;
+extern fn llama_vocab_mask(vocab: ptr): i32;
+extern fn llama_vocab_get_score(vocab: ptr, token: i32): f32;
+extern fn llama_vocab_get_attr(vocab: ptr, token: i32): i32;
+extern fn llama_vocab_get_add_sep(vocab: ptr): i32;
+
+// FIM (Fill-in-Middle) tokens
+extern fn llama_vocab_fim_pre(vocab: ptr): i32;
+extern fn llama_vocab_fim_suf(vocab: ptr): i32;
+extern fn llama_vocab_fim_mid(vocab: ptr): i32;
+extern fn llama_vocab_fim_pad(vocab: ptr): i32;
+extern fn llama_vocab_fim_rep(vocab: ptr): i32;
+extern fn llama_vocab_fim_sep(vocab: ptr): i32;
+
+// Additional model info
+extern fn llama_model_n_head_kv(model: ptr): i32;
+extern fn llama_model_n_swa(model: ptr): i32;
+extern fn llama_model_rope_freq_scale_train(model: ptr): f32;
+extern fn llama_model_decoder_start_token(model: ptr): i32;
+extern fn llama_model_is_hybrid(model: ptr): i32;
+extern fn llama_model_is_diffusion(model: ptr): i32;
+extern fn llama_model_rope_type(model: ptr): i32;
+
+// Model metadata
+extern fn llama_model_meta_val_str(model: ptr, key: string, buf: ptr, buf_size: u64): i32;
+extern fn llama_model_meta_count(model: ptr): i32;
+extern fn llama_model_meta_key_by_index(model: ptr, i: i32, buf: ptr, buf_size: u64): i32;
+extern fn llama_model_meta_val_str_by_index(model: ptr, i: i32, buf: ptr, buf_size: u64): i32;
+
+// Chat templates
+extern fn llama_chat_builtin_templates(output: ptr, len: u64): i32;
+
+// Context settings
+extern fn llama_set_embeddings(ctx: ptr, embeddings: i32): void;
+extern fn llama_set_causal_attn(ctx: ptr, causal_attn: i32): void;
+extern fn llama_set_warmup(ctx: ptr, warmup: i32): void;
+extern fn llama_pooling_type(ctx: ptr): i32;
+
+// Embeddings
+extern fn llama_get_embeddings_seq(ctx: ptr, seq_id: i32): ptr;
+
+// Memory helpers
+extern fn llama_memory_can_shift(mem: ptr): i32;
+extern fn llama_memory_seq_div(mem: ptr, seq_id: i32, p0: i32, p1: i32, d: i32): void;
+
+// Additional utilities
+extern fn llama_supports_rpc(): i32;
+extern fn llama_numa_init(numa: i32): void;
+extern fn llama_n_ctx_seq(ctx: ptr): u32;
 
 // ============================================================================
 // High-level API
@@ -852,6 +958,572 @@ export fn complete(model_path: string, prompt: string, options): string {
     backend_free();
 
     return result;
+}
+
+// ============================================================================
+// Grammar Sampling
+// ============================================================================
+
+// Create a grammar-constrained sampler
+// grammar_str: GBNF grammar string (see llama.cpp/grammars/README.md)
+// grammar_root: name of the root rule (typically "root")
+export fn sampler_grammar(model: ptr, grammar_str: string, grammar_root: string): ptr {
+    let vocab = llama_model_get_vocab(model);
+    let sampler = llama_sampler_init_grammar(vocab, grammar_str, grammar_root);
+    if (sampler == null) {
+        throw "Failed to create grammar sampler - check grammar syntax";
+    }
+    return sampler;
+}
+
+// Create a sampler chain with grammar constraint
+// Options:
+//   grammar: GBNF grammar string
+//   grammar_root: root rule name (default: "root")
+//   top_k, top_p, temp, etc.: standard sampling parameters
+export fn sampler_create_with_grammar(model: ptr, options): ptr {
+    let opts = options || {};
+
+    let chain_params = alloc(8);
+    memset(chain_params, 0, 8);
+    let chain = llama_sampler_chain_init(chain_params);
+    free(chain_params);
+
+    if (chain == null) {
+        throw "Failed to create sampler chain";
+    }
+
+    // Add penalties if specified
+    let repeat_penalty = opts.repeat_penalty || 1.1;
+    let repeat_last_n = opts.repeat_last_n || 64;
+    if (repeat_penalty != 1.0) {
+        let freq_penalty = opts.freq_penalty || 0.0;
+        let presence_penalty = opts.presence_penalty || 0.0;
+        let penalties = llama_sampler_init_penalties(repeat_last_n, repeat_penalty, freq_penalty, presence_penalty);
+        llama_sampler_chain_add(chain, penalties);
+    }
+
+    // Add top-k
+    let top_k = opts.top_k || 40;
+    if (top_k > 0) {
+        let top_k_sampler = llama_sampler_init_top_k(top_k);
+        llama_sampler_chain_add(chain, top_k_sampler);
+    }
+
+    // Add top-p
+    let top_p = opts.top_p || 0.95;
+    if (top_p < 1.0) {
+        let top_p_sampler = llama_sampler_init_top_p(top_p, 1);
+        llama_sampler_chain_add(chain, top_p_sampler);
+    }
+
+    // Add temperature
+    let temp = opts.temp || 0.8;
+    if (temp > 0.0) {
+        let temp_sampler = llama_sampler_init_temp(temp);
+        llama_sampler_chain_add(chain, temp_sampler);
+    }
+
+    // Add grammar constraint
+    if (opts.grammar) {
+        let grammar_root = opts.grammar_root || "root";
+        let vocab = llama_model_get_vocab(model);
+        let grammar_sampler = llama_sampler_init_grammar(vocab, opts.grammar, grammar_root);
+        if (grammar_sampler != null) {
+            llama_sampler_chain_add(chain, grammar_sampler);
+        }
+    }
+
+    // Add distribution sampler (final selection)
+    let seed = opts.seed || DEFAULT_SEED;
+    let dist = llama_sampler_init_dist(seed);
+    llama_sampler_chain_add(chain, dist);
+
+    return chain;
+}
+
+// Common JSON grammar for structured output
+export let GRAMMAR_JSON = "root ::= object | array\n" +
+    "object ::= \"{\" ws ( pair ( \",\" ws pair )* )? ws \"}\"\n" +
+    "pair ::= string ws \":\" ws value\n" +
+    "array ::= \"[\" ws ( value ( \",\" ws value )* )? ws \"]\"\n" +
+    "value ::= string | number | object | array | \"true\" | \"false\" | \"null\"\n" +
+    "string ::= \"\\\"\" ( [^\"\\\\] | \"\\\\\" [\"\\\\nrt] )* \"\\\"\"\n" +
+    "number ::= \"-\"? ( \"0\" | [1-9] [0-9]* ) ( \".\" [0-9]+ )? ( [eE] [\"+\\-\"]? [0-9]+ )?\n" +
+    "ws ::= [ \\t\\n]*";
+
+// ============================================================================
+// LoRA Adapters
+// ============================================================================
+
+// Load a LoRA adapter from file
+export fn lora_load(model: ptr, path: string): ptr {
+    let adapter = llama_adapter_lora_init(model, path);
+    if (adapter == null) {
+        throw "Failed to load LoRA adapter: " + path;
+    }
+    return adapter;
+}
+
+// Free a LoRA adapter
+export fn lora_free(adapter: ptr) {
+    if (adapter != null) {
+        llama_adapter_lora_free(adapter);
+    }
+}
+
+// Apply a LoRA adapter to a context
+// scale: strength of the adapter (1.0 = full strength)
+export fn lora_apply(ctx: ptr, adapter: ptr, scale: f32): i32 {
+    return llama_set_adapter_lora(ctx, adapter, scale);
+}
+
+// Remove a specific LoRA adapter from context
+export fn lora_remove(ctx: ptr, adapter: ptr): i32 {
+    return llama_rm_adapter_lora(ctx, adapter);
+}
+
+// Remove all LoRA adapters from context
+export fn lora_clear(ctx: ptr) {
+    llama_clear_adapter_lora(ctx);
+}
+
+// ============================================================================
+// State/Session Management
+// ============================================================================
+
+// Get the size needed to save the context state
+export fn state_size(ctx: ptr): u64 {
+    return llama_state_get_size(ctx);
+}
+
+// Save context state to a file
+// Returns true on success
+export fn state_save(ctx: ptr, path: string, tokens: array): bool {
+    let n_tokens = tokens.length;
+    let tokens_buf = alloc(n_tokens * 4);
+    for (let i = 0; i < n_tokens; i = i + 1) {
+        ptr_write_i32(ptr_offset(tokens_buf, i, 4), tokens[i]);
+    }
+
+    let result = llama_state_save_file(ctx, path, tokens_buf, n_tokens);
+    free(tokens_buf);
+
+    return result != 0;
+}
+
+// Load context state from a file
+// Returns: { tokens: array, success: bool }
+export fn state_load(ctx: ptr, path: string, max_tokens: i32): object {
+    let tokens_buf = alloc(max_tokens * 4);
+    let n_tokens_ptr = alloc(8);
+
+    let result = llama_state_load_file(ctx, path, tokens_buf, max_tokens, n_tokens_ptr);
+
+    if (result == 0) {
+        free(tokens_buf);
+        free(n_tokens_ptr);
+        return { tokens: [], success: false };
+    }
+
+    let n_tokens = ptr_deref_u64(n_tokens_ptr);
+    free(n_tokens_ptr);
+
+    let tokens = [];
+    for (let i = 0; i < n_tokens; i = i + 1) {
+        tokens.push(ptr_deref_i32(ptr_offset(tokens_buf, i, 4)));
+    }
+    free(tokens_buf);
+
+    return { tokens: tokens, success: true };
+}
+
+// Save a single sequence to file
+export fn state_seq_save(ctx: ptr, path: string, seq_id: i32, tokens: array): bool {
+    let n_tokens = tokens.length;
+    let tokens_buf = alloc(n_tokens * 4);
+    for (let i = 0; i < n_tokens; i = i + 1) {
+        ptr_write_i32(ptr_offset(tokens_buf, i, 4), tokens[i]);
+    }
+
+    let result = llama_state_seq_save_file(ctx, path, seq_id, tokens_buf, n_tokens);
+    free(tokens_buf);
+
+    return result > 0;
+}
+
+// Load a single sequence from file
+export fn state_seq_load(ctx: ptr, path: string, seq_id: i32, max_tokens: i32): object {
+    let tokens_buf = alloc(max_tokens * 4);
+    let n_tokens_ptr = alloc(8);
+
+    let result = llama_state_seq_load_file(ctx, path, seq_id, tokens_buf, max_tokens, n_tokens_ptr);
+
+    if (result == 0) {
+        free(tokens_buf);
+        free(n_tokens_ptr);
+        return { tokens: [], success: false };
+    }
+
+    let n_tokens = ptr_deref_u64(n_tokens_ptr);
+    free(n_tokens_ptr);
+
+    let tokens = [];
+    for (let i = 0; i < n_tokens; i = i + 1) {
+        tokens.push(ptr_deref_i32(ptr_offset(tokens_buf, i, 4)));
+    }
+    free(tokens_buf);
+
+    return { tokens: tokens, success: true };
+}
+
+// ============================================================================
+// Embeddings
+// ============================================================================
+
+// Get embeddings for a sequence
+// Returns null if pooling is not enabled
+export fn get_embeddings(ctx: ptr, seq_id: i32): ptr {
+    return llama_get_embeddings_seq(ctx, seq_id);
+}
+
+// Extract embeddings as an array of floats
+export fn extract_embeddings(ctx: ptr, model: ptr, seq_id: i32): array {
+    let embd_ptr = llama_get_embeddings_seq(ctx, seq_id);
+    if (embd_ptr == null) {
+        return [];
+    }
+
+    let n_embd = llama_model_n_embd(model);
+    let embeddings = [];
+    for (let i = 0; i < n_embd; i = i + 1) {
+        // Read f32 values from the embeddings pointer
+        let bytes = [];
+        for (let j = 0; j < 4; j = j + 1) {
+            bytes.push(ptr_deref_u8(ptr_offset(embd_ptr, i * 4 + j, 1)));
+        }
+        // Convert bytes to float (little-endian IEEE 754)
+        embeddings.push(__bytes_to_f32(bytes));
+    }
+
+    return embeddings;
+}
+
+// Enable/disable embeddings extraction
+export fn set_embeddings(ctx: ptr, enabled: bool) {
+    llama_set_embeddings(ctx, enabled ? 1 : 0);
+}
+
+// Get the pooling type of the context
+export fn get_pooling_type(ctx: ptr): i32 {
+    return llama_pooling_type(ctx);
+}
+
+// ============================================================================
+// FIM (Fill-in-Middle) for Code Completion
+// ============================================================================
+
+// Get FIM special tokens
+export fn fim_tokens(model: ptr): object {
+    let vocab = llama_model_get_vocab(model);
+    return {
+        pre: llama_vocab_fim_pre(vocab),     // Prefix token
+        suf: llama_vocab_fim_suf(vocab),     // Suffix token
+        mid: llama_vocab_fim_mid(vocab),     // Middle token
+        pad: llama_vocab_fim_pad(vocab),     // Padding token
+        rep: llama_vocab_fim_rep(vocab),     // Repository token
+        sep: llama_vocab_fim_sep(vocab)      // Separator token
+    };
+}
+
+// Check if model supports FIM
+export fn supports_fim(model: ptr): bool {
+    let vocab = llama_model_get_vocab(model);
+    let pre = llama_vocab_fim_pre(vocab);
+    let suf = llama_vocab_fim_suf(vocab);
+    let mid = llama_vocab_fim_mid(vocab);
+    return pre != TOKEN_NULL && suf != TOKEN_NULL && mid != TOKEN_NULL;
+}
+
+// Create FIM prompt for code infilling
+// prefix: code before cursor
+// suffix: code after cursor
+export fn fim_prompt(model: ptr, prefix: string, suffix: string): string {
+    let fim = fim_tokens(model);
+    if (fim.pre == TOKEN_NULL) {
+        throw "Model does not support FIM";
+    }
+
+    let pre_piece = token_to_piece(model, fim.pre, true);
+    let suf_piece = token_to_piece(model, fim.suf, true);
+    let mid_piece = token_to_piece(model, fim.mid, true);
+
+    return pre_piece + prefix + suf_piece + suffix + mid_piece;
+}
+
+// ============================================================================
+// Chat Templates
+// ============================================================================
+
+// Get the model's default chat template
+export fn chat_template(model: ptr): string {
+    let tmpl_ptr = llama_model_chat_template(model, null);
+    if (tmpl_ptr == null) {
+        return "";
+    }
+    return ptr_to_string(tmpl_ptr);
+}
+
+// Apply chat template to format messages
+// messages: array of { role: string, content: string }
+// add_assistant: whether to add assistant prompt at end
+export fn chat_format(model: ptr, messages: array, add_assistant: bool): string {
+    let tmpl_ptr = llama_model_chat_template(model, null);
+    if (tmpl_ptr == null) {
+        throw "Model does not have a chat template";
+    }
+    let tmpl = ptr_to_string(tmpl_ptr);
+
+    // Allocate chat messages array
+    // Each llama_chat_message is 16 bytes (2 pointers)
+    let n_msg = messages.length;
+    let chat_buf = alloc(n_msg * 16);
+    let string_bufs = [];
+
+    for (let i = 0; i < n_msg; i = i + 1) {
+        let msg = messages[i];
+
+        // Allocate and write role string
+        let role_bytes = msg.role.bytes;
+        let role_buf = alloc(role_bytes.length + 1);
+        for (let j = 0; j < role_bytes.length; j = j + 1) {
+            ptr_write_u8(ptr_offset(role_buf, j, 1), role_bytes[j]);
+        }
+        ptr_write_u8(ptr_offset(role_buf, role_bytes.length, 1), 0);
+        string_bufs.push(role_buf);
+
+        // Allocate and write content string
+        let content_bytes = msg.content.bytes;
+        let content_buf = alloc(content_bytes.length + 1);
+        for (let j = 0; j < content_bytes.length; j = j + 1) {
+            ptr_write_u8(ptr_offset(content_buf, j, 1), content_bytes[j]);
+        }
+        ptr_write_u8(ptr_offset(content_buf, content_bytes.length, 1), 0);
+        string_bufs.push(content_buf);
+
+        // Write pointers to chat struct
+        ptr_write_ptr(ptr_offset(chat_buf, i * 16, 1), role_buf);
+        ptr_write_ptr(ptr_offset(chat_buf, i * 16 + 8, 1), content_buf);
+    }
+
+    // Allocate output buffer
+    let buf_size = 4096;
+    let out_buf = alloc(buf_size);
+
+    let result_len = llama_chat_apply_template(tmpl, chat_buf, n_msg, add_assistant ? 1 : 0, out_buf, buf_size);
+
+    if (result_len < 0) {
+        // Buffer too small, reallocate
+        free(out_buf);
+        buf_size = -result_len + 64;
+        out_buf = alloc(buf_size);
+        result_len = llama_chat_apply_template(tmpl, chat_buf, n_msg, add_assistant ? 1 : 0, out_buf, buf_size);
+    }
+
+    // Read result
+    let result = "";
+    if (result_len > 0) {
+        result = ptr_to_string_n(out_buf, result_len);
+    }
+
+    // Cleanup
+    free(out_buf);
+    free(chat_buf);
+    for (let i = 0; i < string_bufs.length; i = i + 1) {
+        free(string_bufs[i]);
+    }
+
+    return result;
+}
+
+// ============================================================================
+// Model Metadata
+// ============================================================================
+
+// Get model metadata value by key
+export fn model_meta(model: ptr, key: string): string {
+    let buf = alloc(512);
+    let len = llama_model_meta_val_str(model, key, buf, 512);
+
+    if (len < 0) {
+        free(buf);
+        return "";
+    }
+
+    let result = ptr_to_string_n(buf, len);
+    free(buf);
+    return result;
+}
+
+// Get number of metadata key-value pairs
+export fn model_meta_count(model: ptr): i32 {
+    return llama_model_meta_count(model);
+}
+
+// Get all model metadata as an object
+export fn model_meta_all(model: ptr): object {
+    let count = llama_model_meta_count(model);
+    let result = {};
+
+    let key_buf = alloc(256);
+    let val_buf = alloc(512);
+
+    for (let i = 0; i < count; i = i + 1) {
+        let key_len = llama_model_meta_key_by_index(model, i, key_buf, 256);
+        if (key_len > 0) {
+            let key = ptr_to_string_n(key_buf, key_len);
+            let val_len = llama_model_meta_val_str_by_index(model, i, val_buf, 512);
+            if (val_len > 0) {
+                result[key] = ptr_to_string_n(val_buf, val_len);
+            }
+        }
+    }
+
+    free(key_buf);
+    free(val_buf);
+    return result;
+}
+
+// Extended model info
+export fn model_info_extended(model: ptr): object {
+    let desc_buf = alloc(256);
+    llama_model_desc(model, desc_buf, 256);
+    let desc = ptr_to_string(desc_buf);
+    free(desc_buf);
+
+    return {
+        description: desc,
+        n_ctx_train: llama_model_n_ctx_train(model),
+        n_embd: llama_model_n_embd(model),
+        n_layer: llama_model_n_layer(model),
+        n_head: llama_model_n_head(model),
+        n_head_kv: llama_model_n_head_kv(model),
+        n_swa: llama_model_n_swa(model),
+        size: llama_model_size(model),
+        n_params: llama_model_n_params(model),
+        has_encoder: llama_model_has_encoder(model) != 0,
+        has_decoder: llama_model_has_decoder(model) != 0,
+        is_recurrent: llama_model_is_recurrent(model) != 0,
+        is_hybrid: llama_model_is_hybrid(model) != 0,
+        is_diffusion: llama_model_is_diffusion(model) != 0,
+        rope_type: llama_model_rope_type(model),
+        rope_freq_scale: llama_model_rope_freq_scale_train(model),
+        decoder_start_token: llama_model_decoder_start_token(model)
+    };
+}
+
+// ============================================================================
+// Additional Samplers
+// ============================================================================
+
+// Create XTC sampler
+export fn sampler_xtc(p: f32, t: f32, min_keep: u64, seed: u32): ptr {
+    return llama_sampler_init_xtc(p, t, min_keep, seed);
+}
+
+// Create Top-N-Sigma sampler
+export fn sampler_top_n_sigma(n: f32): ptr {
+    return llama_sampler_init_top_n_sigma(n);
+}
+
+// Create infill sampler for FIM
+export fn sampler_infill(model: ptr): ptr {
+    let vocab = llama_model_get_vocab(model);
+    return llama_sampler_init_infill(vocab);
+}
+
+// ============================================================================
+// Additional Vocab Functions
+// ============================================================================
+
+// Get separator token
+export fn vocab_sep(model: ptr): i32 {
+    let vocab = llama_model_get_vocab(model);
+    return llama_vocab_sep(vocab);
+}
+
+// Get mask token (for BERT-style models)
+export fn vocab_mask(model: ptr): i32 {
+    let vocab = llama_model_get_vocab(model);
+    return llama_vocab_mask(vocab);
+}
+
+// Get token score
+export fn token_score(model: ptr, token: i32): f32 {
+    let vocab = llama_model_get_vocab(model);
+    return llama_vocab_get_score(vocab, token);
+}
+
+// Get token attributes
+export fn token_attr(model: ptr, token: i32): i32 {
+    let vocab = llama_model_get_vocab(model);
+    return llama_vocab_get_attr(vocab, token);
+}
+
+// Check if model adds separator token
+export fn vocab_add_sep(model: ptr): bool {
+    let vocab = llama_model_get_vocab(model);
+    return llama_vocab_get_add_sep(vocab) != 0;
+}
+
+// ============================================================================
+// Context Settings
+// ============================================================================
+
+// Set causal attention mode
+export fn set_causal_attn(ctx: ptr, causal: bool) {
+    llama_set_causal_attn(ctx, causal ? 1 : 0);
+}
+
+// Set warmup mode (for pre-loading weights)
+export fn set_warmup(ctx: ptr, warmup: bool) {
+    llama_set_warmup(ctx, warmup ? 1 : 0);
+}
+
+// ============================================================================
+// Additional KV Cache Functions
+// ============================================================================
+
+// Divide positions in a sequence
+export fn kv_cache_seq_div(ctx: ptr, seq_id: i32, p0: i32, p1: i32, d: i32) {
+    let mem = llama_get_memory(ctx);
+    llama_memory_seq_div(mem, seq_id, p0, p1, d);
+}
+
+// Check if memory supports shifting
+export fn memory_can_shift(ctx: ptr): bool {
+    let mem = llama_get_memory(ctx);
+    return llama_memory_can_shift(mem) != 0;
+}
+
+// ============================================================================
+// System Capabilities
+// ============================================================================
+
+// Check RPC support
+export fn supports_rpc(): bool {
+    return llama_supports_rpc() != 0;
+}
+
+// Initialize NUMA (call before loading models)
+// numa: 0 = disabled, 1 = distribute, 2 = isolate, 3 = numactl, 4 = mirror
+export fn numa_init(numa: i32) {
+    llama_numa_init(numa);
+}
+
+// Get context sequence size
+export fn n_ctx_seq(ctx: ptr): u32 {
+    return llama_n_ctx_seq(ctx);
 }
 
 // ============================================================================

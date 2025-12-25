@@ -1,0 +1,150 @@
+// session.hml - Save and restore conversation sessions
+//
+// Usage:
+//   hemlock examples/session.hml <model.gguf> save <session-file> "<prompt>"
+//   hemlock examples/session.hml <model.gguf> load <session-file> "<continue-prompt>"
+//
+// Example:
+//   # Start a new session
+//   hemlock examples/session.hml llama.gguf save session.bin "Tell me about cats."
+//
+//   # Continue from saved session
+//   hemlock examples/session.hml llama.gguf load session.bin "What else can you tell me?"
+
+import * as llama from "../llama.hml";
+
+fn main() {
+    let args = __args();
+    if (args.length < 5) {
+        print("Usage:");
+        print("  hemlock examples/session.hml <model.gguf> save <session-file> \"<prompt>\"");
+        print("  hemlock examples/session.hml <model.gguf> load <session-file> \"<continue-prompt>\"");
+        print("");
+        print("This example demonstrates saving and restoring KV cache state.");
+        print("Useful for long conversations or expensive prompt processing.");
+        return;
+    }
+
+    let model_path = args[1];
+    let mode = args[2];  // "save" or "load"
+    let session_path = args[3];
+    let prompt = args[4];
+
+    if (mode != "save" && mode != "load") {
+        print("Error: Mode must be 'save' or 'load'");
+        return;
+    }
+
+    print("=== Session Management Example ===\n");
+
+    llama.backend_init();
+
+    // Load model
+    print("Loading model: " + model_path);
+    let model = llama.model_load(model_path, {
+        n_gpu_layers: llama.supports_gpu() ? 99 : 0
+    });
+    print("Model: " + llama.model_info(model).description);
+
+    // Create context
+    let ctx = llama.context_create(model, {
+        n_ctx: 4096,  // Larger context for sessions
+        n_batch: 512
+    });
+
+    let sampler = llama.sampler_create({
+        temp: 0.7,
+        top_k: 40,
+        top_p: 0.9
+    });
+
+    let all_tokens = [];
+
+    if (mode == "load") {
+        // Load existing session
+        print("\nLoading session from: " + session_path);
+        let loaded = llama.state_load(ctx, session_path, 4096);
+
+        if (!loaded.success) {
+            print("Error: Failed to load session file");
+            llama.sampler_free(sampler);
+            llama.context_free(ctx);
+            llama.model_free(model);
+            llama.backend_free();
+            return;
+        }
+
+        all_tokens = loaded.tokens;
+        print("Loaded " + all_tokens.length + " tokens from session");
+
+        // Show what was in the session
+        let prev_text = llama.detokenize(model, all_tokens, { remove_special: false });
+        print("\n--- Previous conversation ---");
+        print(prev_text);
+        print("\n--- Continuing ---\n");
+    }
+
+    // Add new prompt
+    print("Prompt: " + prompt + "\n");
+    let new_tokens = llama.tokenize(model, prompt, {
+        add_special: mode == "save"  // Only add BOS on new session
+    });
+
+    // Decode all tokens
+    if (mode == "load") {
+        // Already have KV cache from loaded state, just decode new tokens
+        llama.decode(ctx, new_tokens, all_tokens.length);
+    } else {
+        // New session, decode from scratch
+        llama.decode(ctx, new_tokens, 0);
+    }
+
+    for (let i = 0; i < new_tokens.length; i = i + 1) {
+        all_tokens.push(new_tokens[i]);
+    }
+
+    // Generate response
+    print("Response: ");
+    let n_cur = all_tokens.length;
+
+    for (let i = 0; i < 256; i = i + 1) {
+        let token = llama.sample(sampler, ctx, -1);
+
+        if (llama.is_eog(model, token)) {
+            break;
+        }
+
+        all_tokens.push(token);
+        let piece = llama.token_to_piece(model, token, false);
+        print_inline(piece);
+
+        llama.decode(ctx, [token], n_cur);
+        n_cur = n_cur + 1;
+    }
+    print("\n");
+
+    // Save session
+    print("\nSaving session to: " + session_path);
+    print("Total tokens: " + all_tokens.length);
+
+    let saved = llama.state_save(ctx, session_path, all_tokens);
+    if (saved) {
+        print("Session saved successfully!");
+
+        // Show file size
+        let state_size = llama.state_size(ctx);
+        print("State size: " + (state_size / 1024 / 1024) + " MB");
+    } else {
+        print("Error: Failed to save session");
+    }
+
+    // Cleanup
+    llama.sampler_free(sampler);
+    llama.context_free(ctx);
+    llama.model_free(model);
+    llama.backend_free();
+
+    print("\nDone!");
+}
+
+main();

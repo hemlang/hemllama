@@ -1,0 +1,145 @@
+// embeddings.hml - Extract text embeddings for semantic similarity
+//
+// Usage:
+//   hemlock examples/embeddings.hml <embedding-model.gguf> "<text1>" "<text2>"
+//
+// Example:
+//   hemlock examples/embeddings.hml ~/models/nomic-embed.gguf "Hello world" "Hi there"
+//
+// Note: This requires an embedding model (e.g., nomic-embed, bge, e5)
+
+import * as llama from "../llama.hml";
+
+// Compute cosine similarity between two embedding vectors
+fn cosine_similarity(a: array, b: array): f32 {
+    if (a.length != b.length || a.length == 0) {
+        return 0.0;
+    }
+
+    let dot = 0.0;
+    let norm_a = 0.0;
+    let norm_b = 0.0;
+
+    for (let i = 0; i < a.length; i = i + 1) {
+        dot = dot + a[i] * b[i];
+        norm_a = norm_a + a[i] * a[i];
+        norm_b = norm_b + b[i] * b[i];
+    }
+
+    if (norm_a == 0.0 || norm_b == 0.0) {
+        return 0.0;
+    }
+
+    return dot / (sqrt(norm_a) * sqrt(norm_b));
+}
+
+fn sqrt(x: f32): f32 {
+    // Newton's method for square root
+    if (x <= 0.0) {
+        return 0.0;
+    }
+    let guess = x / 2.0;
+    for (let i = 0; i < 10; i = i + 1) {
+        guess = (guess + x / guess) / 2.0;
+    }
+    return guess;
+}
+
+fn main() {
+    let args = __args();
+    if (args.length < 4) {
+        print("Usage: hemlock examples/embeddings.hml <embedding-model.gguf> \"<text1>\" \"<text2>\"");
+        print("");
+        print("This example extracts embeddings and computes semantic similarity.");
+        print("Use an embedding model like nomic-embed, bge, or e5.");
+        return;
+    }
+
+    let model_path = args[1];
+    let text1 = args[2];
+    let text2 = args[3];
+
+    print("=== Text Embeddings Example ===\n");
+
+    llama.backend_init();
+
+    // Load embedding model
+    print("Loading model: " + model_path);
+    let model = llama.model_load(model_path, {
+        n_gpu_layers: llama.supports_gpu() ? 99 : 0
+    });
+
+    let info = llama.model_info(model);
+    print("Model: " + info.description);
+    print("Embedding dimension: " + info.n_embd);
+
+    // Create context with embeddings enabled
+    let ctx = llama.context_create(model, {
+        n_ctx: 512,
+        n_batch: 512,
+        embeddings: true
+    });
+
+    // Check pooling type
+    let pooling = llama.get_pooling_type(ctx);
+    print("Pooling type: " + pooling);
+
+    // Get embeddings for text1
+    print("\nText 1: \"" + text1 + "\"");
+    let tokens1 = llama.tokenize(model, text1, { add_special: true });
+    print("  Tokens: " + tokens1.length);
+
+    llama.decode(ctx, tokens1, 0);
+    let emb1 = llama.extract_embeddings(ctx, model, 0);
+
+    if (emb1.length == 0) {
+        print("  Warning: Could not extract embeddings. Model may not support pooling.");
+        print("  Try using llama.get_logits() for token-level representations instead.");
+    } else {
+        print("  Embedding dimension: " + emb1.length);
+        print("  First 5 values: [" + emb1[0] + ", " + emb1[1] + ", " + emb1[2] + ", " + emb1[3] + ", " + emb1[4] + ", ...]");
+    }
+
+    // Clear cache and get embeddings for text2
+    llama.kv_cache_clear(ctx);
+
+    print("\nText 2: \"" + text2 + "\"");
+    let tokens2 = llama.tokenize(model, text2, { add_special: true });
+    print("  Tokens: " + tokens2.length);
+
+    llama.decode(ctx, tokens2, 0);
+    let emb2 = llama.extract_embeddings(ctx, model, 0);
+
+    if (emb2.length > 0) {
+        print("  Embedding dimension: " + emb2.length);
+        print("  First 5 values: [" + emb2[0] + ", " + emb2[1] + ", " + emb2[2] + ", " + emb2[3] + ", " + emb2[4] + ", ...]");
+    }
+
+    // Compute similarity
+    if (emb1.length > 0 && emb2.length > 0) {
+        let similarity = cosine_similarity(emb1, emb2);
+        print("\n=== Similarity Score ===");
+        print("Cosine similarity: " + similarity);
+
+        if (similarity > 0.9) {
+            print("Interpretation: Very similar (nearly identical meaning)");
+        } else if (similarity > 0.7) {
+            print("Interpretation: Similar (related meaning)");
+        } else if (similarity > 0.5) {
+            print("Interpretation: Somewhat similar");
+        } else if (similarity > 0.3) {
+            print("Interpretation: Weakly related");
+        } else {
+            print("Interpretation: Different meaning");
+        }
+    }
+
+    // Cleanup
+    llama.context_free(ctx);
+    llama.model_free(model);
+    llama.backend_free();
+
+    print("\nDone!");
+}
+
+main();
