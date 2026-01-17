@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    name: Build and Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libffi-dev
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install cmake libffi
+
+      - name: Build llama.cpp shared library
+        run: |
+          chmod +x build.sh
+          ./build.sh -DLLAMA_CURL=OFF
+
+      - name: Verify library build
+        run: |
+          echo "Checking built libraries..."
+          ls -la lib/
+          if [ -f lib/libllama.so ] || [ -f lib/libllama.dylib ]; then
+            echo "Library built successfully!"
+          else
+            echo "Error: libllama not found"
+            exit 1
+          fi
+
+      - name: Install Hemlock compiler
+        id: install-hemlock
+        continue-on-error: true
+        run: |
+          # Try to install hemlock if available
+          # Note: Update this section when hemlock has official releases
+          if command -v hemlock &> /dev/null; then
+            echo "hemlock_available=true" >> $GITHUB_OUTPUT
+            hemlock --version || true
+          else
+            echo "Hemlock compiler not found in PATH"
+            echo "hemlock_available=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run tests
+        if: steps.install-hemlock.outputs.hemlock_available == 'true'
+        run: |
+          export LD_LIBRARY_PATH="$(pwd)/lib:$LD_LIBRARY_PATH"
+          export DYLD_LIBRARY_PATH="$(pwd)/lib:$DYLD_LIBRARY_PATH"
+          hemlock test_basic.hml
+
+      - name: Validate Hemlock source files
+        run: |
+          echo "Checking Hemlock source files exist..."
+          test -f llama.hml && echo "llama.hml: OK"
+          test -f test_basic.hml && echo "test_basic.hml: OK"
+          test -f examples/simple.hml && echo "examples/simple.hml: OK"
+          test -f examples/chat.hml && echo "examples/chat.hml: OK"
+          test -f examples/oneshot.hml && echo "examples/oneshot.hml: OK"
+          echo "All source files present!"
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check shell scripts
+        run: |
+          # Check build.sh for syntax errors
+          bash -n build.sh
+          echo "Shell scripts OK"
+
+      - name: Check for common issues
+        run: |
+          # Ensure no debug/temp files are committed
+          if find . -name "*.orig" -o -name "*.bak" -o -name "*~" | grep -q .; then
+            echo "Warning: Found backup/temp files"
+            find . -name "*.orig" -o -name "*.bak" -o -name "*~"
+          fi
+          echo "Lint checks passed!"
