@@ -202,12 +202,27 @@ export fn backend_free() {
 // Get system info string
 export fn system_info(): string {
     let info_ptr = llama_print_system_info();
-    return ptr_to_string(info_ptr);
+    return ptr_to_string_long(info_ptr);
 }
 
 // Check GPU support
 export fn supports_gpu(): bool {
     return llama_supports_gpu_offload() != 0;
+}
+
+// Check memory mapping support
+export fn supports_mmap(): bool {
+    return llama_supports_mmap() != 0;
+}
+
+// Check memory locking support
+export fn supports_mlock(): bool {
+    return llama_supports_mlock() != 0;
+}
+
+// Get maximum number of devices
+export fn max_devices(): i32 {
+    return llama_max_devices();
 }
 
 // ============================================================================
@@ -380,6 +395,11 @@ export fn set_threads(ctx: ptr, n_threads: i32, n_threads_batch: i32) {
     llama_set_n_threads(ctx, n_threads, n_threads_batch || n_threads);
 }
 
+// Get model from context
+export fn get_model(ctx: ptr): ptr {
+    return llama_get_model(ctx);
+}
+
 // ============================================================================
 // Tokenization functions
 // ============================================================================
@@ -508,6 +528,122 @@ export fn is_eog(model: ptr, token: i32): bool {
     return llama_vocab_is_eog(vocab, token) != 0;
 }
 
+// Check if token is a control token
+export fn is_control(model: ptr, token: i32): bool {
+    let vocab = llama_model_get_vocab(model);
+    return llama_vocab_is_control(vocab, token) != 0;
+}
+
+// Get the text representation of a token directly from vocab
+export fn vocab_get_text(model: ptr, token: i32): string {
+    let vocab = llama_model_get_vocab(model);
+    let text_ptr = llama_vocab_get_text(vocab, token);
+    return ptr_to_string(text_ptr);
+}
+
+// ============================================================================
+// Chat Template functions
+// ============================================================================
+
+// Get the chat template from a model
+// name: template name (null for default)
+export fn chat_template(model: ptr, name: string): string {
+    let name_ptr = null;
+    if (name != null && name != "") {
+        name_ptr = string_to_ptr(name);
+    }
+
+    let tmpl_ptr = llama_model_chat_template(model, name_ptr);
+
+    if (name_ptr != null) {
+        free(name_ptr);
+    }
+
+    if (tmpl_ptr == null) {
+        return "";
+    }
+
+    return ptr_to_string_long(tmpl_ptr);
+}
+
+// Apply a chat template to messages
+// messages: array of { role: "user"|"assistant"|"system", content: "..." }
+// add_generation_prompt: add assistant prefix for generation (default: true)
+// template: custom template string (null to use model default)
+export fn apply_chat_template(model: ptr, messages: array, options): string {
+    let opts = options || {};
+    let add_gen = opts.add_generation_prompt != false ? 1 : 0;
+
+    // Get template
+    let template = opts.template;
+    let tmpl_ptr = null;
+    if (template != null && template != "") {
+        tmpl_ptr = string_to_ptr(template);
+    } else {
+        // Get from model
+        let model_tmpl = llama_model_chat_template(model, null);
+        if (model_tmpl == null) {
+            throw "Model has no chat template and none provided";
+        }
+        tmpl_ptr = model_tmpl;
+    }
+
+    // Build chat messages array
+    // Each message is a struct with role and content pointers
+    // llama_chat_message is 16 bytes (2 pointers)
+    let n_msg = messages.length;
+    let chat_buf = alloc(n_msg * 16);
+    let string_ptrs = [];  // Track allocated strings for cleanup
+
+    for (let i = 0; i < n_msg; i = i + 1) {
+        let msg = messages[i];
+        let role_ptr = string_to_ptr(msg.role);
+        let content_ptr = string_to_ptr(msg.content);
+
+        string_ptrs.push(role_ptr);
+        string_ptrs.push(content_ptr);
+
+        // Write role pointer at offset 0
+        ptr_write_ptr(ptr_offset(chat_buf, i * 16, 1), role_ptr);
+        // Write content pointer at offset 8
+        ptr_write_ptr(ptr_offset(chat_buf, i * 16 + 8, 1), content_ptr);
+    }
+
+    // Allocate output buffer
+    let buf_size = 4096;
+    let out_buf = alloc(buf_size);
+
+    let result_len = llama_chat_apply_template(tmpl_ptr, chat_buf, n_msg, add_gen, out_buf, buf_size);
+
+    if (result_len < 0) {
+        // Buffer too small, reallocate
+        free(out_buf);
+        buf_size = -result_len + 256;
+        out_buf = alloc(buf_size);
+        result_len = llama_chat_apply_template(tmpl_ptr, chat_buf, n_msg, add_gen, out_buf, buf_size);
+    }
+
+    // Cleanup message strings
+    for (let i = 0; i < string_ptrs.length; i = i + 1) {
+        free(string_ptrs[i]);
+    }
+    free(chat_buf);
+
+    // Cleanup template if we allocated it
+    if (opts.template != null && opts.template != "") {
+        free(tmpl_ptr);
+    }
+
+    if (result_len < 0) {
+        free(out_buf);
+        throw "Failed to apply chat template";
+    }
+
+    let result = ptr_to_string_n(out_buf, result_len);
+    free(out_buf);
+    return result;
+}
+
 // ============================================================================
 // Sampling functions
 // ============================================================================
@@ -617,6 +753,119 @@ export fn sampler_accept(sampler: ptr, token: i32) {
 }
 
 // ============================================================================
+// Sampler Chain Introspection functions
+// ============================================================================
+
+// Get number of samplers in the chain
+export fn sampler_chain_n(chain: ptr): i32 {
+    return llama_sampler_chain_n(chain);
+}
+
+// Get sampler at index in the chain
+export fn sampler_chain_get(chain: ptr, i: i32): ptr {
+    return llama_sampler_chain_get(chain, i);
+}
+
+// Remove sampler at index from chain (returns the removed sampler)
+export fn sampler_chain_remove(chain: ptr, i: i32): ptr {
+    return llama_sampler_chain_remove(chain, i);
+}
+
+// Clone a sampler
+export fn sampler_clone(sampler: ptr): ptr {
+    return llama_sampler_clone(sampler);
+}
+
+// Get sampler name/algorithm
+export fn sampler_name(sampler: ptr): string {
+    let name_ptr = llama_sampler_name(sampler);
+    return ptr_to_string(name_ptr);
+}
+
+// Get sampler seed (if applicable)
+export fn sampler_get_seed(sampler: ptr): u32 {
+    return llama_sampler_get_seed(sampler);
+}
+
+// Apply sampler to token candidates manually
+export fn sampler_apply(sampler: ptr, candidates: ptr) {
+    llama_sampler_apply(sampler, candidates);
+}
+
+// ============================================================================
+// Advanced Sampling Algorithms
+// ============================================================================
+
+// Create typical probability sampler
+export fn sampler_init_typical(p: f32, min_keep: i32): ptr {
+    return llama_sampler_init_typical(p, min_keep);
+}
+
+// Create extended temperature sampler with dynamic temperature
+export fn sampler_init_temp_ext(temp: f32, delta: f32, exponent: f32): ptr {
+    return llama_sampler_init_temp_ext(temp, delta, exponent);
+}
+
+// Create Mirostat v1 sampler
+export fn sampler_init_mirostat(n_vocab: i32, seed: u32, tau: f32, eta: f32, m: i32): ptr {
+    return llama_sampler_init_mirostat(n_vocab, seed, tau, eta, m);
+}
+
+// Create Mirostat v2 sampler
+export fn sampler_init_mirostat_v2(seed: u32, tau: f32, eta: f32): ptr {
+    return llama_sampler_init_mirostat_v2(seed, tau, eta);
+}
+
+// Create top-k sampler
+export fn sampler_init_top_k(k: i32): ptr {
+    return llama_sampler_init_top_k(k);
+}
+
+// Create top-p (nucleus) sampler
+export fn sampler_init_top_p(p: f32, min_keep: i32): ptr {
+    return llama_sampler_init_top_p(p, min_keep);
+}
+
+// Create min-p sampler
+export fn sampler_init_min_p(p: f32, min_keep: i32): ptr {
+    return llama_sampler_init_min_p(p, min_keep);
+}
+
+// Create temperature sampler
+export fn sampler_init_temp(temp: f32): ptr {
+    return llama_sampler_init_temp(temp);
+}
+
+// Create greedy sampler
+export fn sampler_init_greedy(): ptr {
+    return llama_sampler_init_greedy();
+}
+
+// Create distribution sampler
+export fn sampler_init_dist(seed: u32): ptr {
+    return llama_sampler_init_dist(seed);
+}
+
+// Create repetition penalties sampler
+export fn sampler_init_penalties(last_n: i32, repeat: f32, freq: f32, presence: f32): ptr {
+    return llama_sampler_init_penalties(last_n, repeat, freq, presence);
+}
+
+// Create empty sampler chain
+export fn sampler_chain_init(): ptr {
+    let chain_params = alloc(8);
+    memset(chain_params, 0, 8);
+    let chain = llama_sampler_chain_init(chain_params);
+    free(chain_params);
+    return chain;
+}
+
+// Add sampler to chain
+export fn sampler_chain_add(chain: ptr, sampler: ptr) {
+    llama_sampler_chain_add(chain, sampler);
+}
+
+// ============================================================================
 // Inference functions
 // ============================================================================
 
@@ -667,6 +916,93 @@ export fn get_logits_ith(ctx: ptr, i: i32): ptr {
 // Synchronize (wait for async operations)
 export fn synchronize(ctx: ptr) {
     llama_synchronize(ctx);
+}
+
+// ============================================================================
+// Embeddings functions
+// ============================================================================
+
+// Encode a batch of tokens for embedding models (encoder-only like BERT)
+// Returns: 0 on success, negative on error
+export fn encode(ctx: ptr, tokens: array): i32 {
+    let n_tokens = tokens.length;
+
+    // Create tokens buffer
+    let tokens_buf = alloc(n_tokens * 4);
+    for (let i = 0; i < n_tokens; i = i + 1) {
+        ptr_write_i32(ptr_offset(tokens_buf, i, 4), tokens[i]);
+    }
+
+    // Create batch struct (48 bytes)
+    let batch = alloc(48);
+    memset(batch, 0, 48);
+
+    // n_tokens at offset 0
+    ptr_write_i32(batch, n_tokens);
+    // token pointer at offset 8 (after padding)
+    ptr_write_ptr(ptr_offset(batch, 8, 1), tokens_buf);
+
+    let result = llama_encode(ctx, batch);
+
+    free(batch);
+    free(tokens_buf);
+
+    return result;
+}
+
+// Get all embeddings from the context
+// Returns pointer to embeddings array (n_tokens * n_embd floats)
+export fn get_embeddings(ctx: ptr): ptr {
+    return llama_get_embeddings(ctx);
+}
+
+// Get embeddings for a specific token index
+// Returns pointer to embedding vector (n_embd floats)
+export fn get_embeddings_ith(ctx: ptr, i: i32): ptr {
+    return llama_get_embeddings_ith(ctx, i);
+}
+
+// Get embedding for a text using an embedding model
+// Convenience function that handles tokenization and encoding
+export fn embed(ctx: ptr, model: ptr, text: string): array {
+    // Tokenize the text
+    let tokens = tokenize(model, text, { add_special: true });
+
+    // Encode the tokens
+    let result = encode(ctx, tokens);
+    if (result != 0) {
+        throw "Failed to encode tokens: " + result;
+    }
+
+    // Get the embedding dimension
+    let n_embd = llama_model_n_embd(model);
+
+    // Get embeddings for the last token (CLS token is typically first, but pooling handles this)
+    let embd_ptr = llama_get_embeddings_ith(ctx, 0);
+    if (embd_ptr == null) {
+        throw "Failed to get embeddings - ensure context was created with embeddings: true";
+    }
+
+    // Convert to array
+    let embeddings = [];
+    for (let i = 0; i < n_embd; i = i + 1) {
+        let val = ptr_deref_f32(ptr_offset(embd_ptr, i, 4));
+        embeddings.push(val);
+    }
+
+    return embeddings;
+}
+
+// Batch init for manual batch control
+export fn batch_init(n_tokens: i32, embd: i32, n_seq_max: i32): ptr {
+    return llama_batch_init(n_tokens, embd, n_seq_max);
+}
+
+// Free a batch
+export fn batch_free(batch: ptr) {
+    if (batch != null) {
+        llama_batch_free(batch);
+    }
 }
 
 // ============================================================================
@@ -732,6 +1068,11 @@ export fn perf_reset(ctx: ptr) {
 // Print sampler performance stats
 export fn perf_sampler_print(sampler: ptr) {
     llama_perf_sampler_print(sampler);
+}
+
+// Reset sampler performance stats
+export fn perf_sampler_reset(sampler: ptr) {
+    llama_perf_sampler_reset(sampler);
 }
 
 // Get current time in microseconds
@@ -894,4 +1235,39 @@ fn ptr_to_string_n(p: ptr, len: i32): string {
 fn ptr_write_ptr(dest: ptr, val: ptr) {
     // Write a pointer value (8 bytes on 64-bit)
     ptr_write_u64(dest, val);
+}
+
+fn ptr_to_string_long(p: ptr): string {
+    if (p == null) {
+        return "";
+    }
+    // Read null-terminated string with higher limit for system info
+    let bytes = [];
+    let offset = 0;
+    while (true) {
+        let b = ptr_deref_u8(ptr_offset(p, offset, 1));
+        if (b == 0) {
+            break;
+        }
+        bytes.push(b);
+        offset = offset + 1;
+        if (offset > 16384) {
+            break;  // Higher safety limit for long strings
+        }
+    }
+    return __string_from_bytes(bytes);
+}
+
+fn string_to_ptr(s: string): ptr {
+    if (s == null) {
+        return null;
+    }
+    let bytes = __string_to_bytes(s);
+    let len = bytes.length;
+    let buf = alloc(len + 1);
+    for (let i = 0; i < len; i = i + 1) {
+        ptr_write_u8(ptr_offset(buf, i, 1), bytes[i]);
+    }
+    ptr_write_u8(ptr_offset(buf, len, 1), 0);  // Null terminator
+    return buf;
 }
