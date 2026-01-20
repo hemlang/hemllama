@@ -1,0 +1,107 @@
+// lora.hml - Demonstrate LoRA adapter loading and application
+//
+// Usage:
+//   hemlock examples/lora.hml <model.gguf> <lora.gguf> "<prompt>"
+//
+// Example:
+//   hemlock examples/lora.hml ~/models/llama.gguf ~/models/my-lora.gguf "Hello!"
+
+import * as llama from "../llama.hml";
+
+fn main() {
+    let args = __args();
+    if (args.length < 4) {
+        print("Usage: hemlock examples/lora.hml <model.gguf> <lora.gguf> \"<prompt>\"");
+        print("");
+        print("This example demonstrates loading and applying a LoRA adapter.");
+        print("LoRA adapters allow fine-tuning models without modifying base weights.");
+        return;
+    }
+
+    let model_path = args[1];
+    let lora_path = args[2];
+    let prompt = args[3];
+
+    print("=== LoRA Adapter Example ===\n");
+
+    llama.backend_init();
+
+    // Load base model
+    print("Loading base model: " + model_path);
+    let model = llama.model_load(model_path, {
+        n_gpu_layers: llama.supports_gpu() ? 99 : 0
+    });
+    print("Model: " + llama.model_info(model).description);
+
+    // Load LoRA adapter
+    print("\nLoading LoRA adapter: " + lora_path);
+    let lora = llama.lora_load(model, lora_path);
+    print("LoRA adapter loaded successfully!");
+
+    // Create context
+    let ctx = llama.context_create(model, {
+        n_ctx: 2048,
+        n_batch: 512
+    });
+
+    // Apply LoRA adapter with full strength (scale = 1.0)
+    print("\nApplying LoRA adapter with scale=1.0...");
+    llama.lora_apply(ctx, lora, 1.0);
+
+    // Create sampler
+    let sampler = llama.sampler_create({
+        temp: 0.7,
+        top_k: 40,
+        top_p: 0.9
+    });
+
+    // Generate with LoRA
+    print("\n--- Generation with LoRA (scale=1.0) ---");
+    print("Prompt: " + prompt + "\n");
+
+    let tokens = llama.tokenize(model, prompt, { add_special: true });
+    llama.decode(ctx, tokens, 0);
+
+    let n_cur = tokens.length;
+    for (let i = 0; i < 128; i = i + 1) {
+        let token = llama.sample(sampler, ctx, -1);
+        if (llama.is_eog(model, token)) {
+            break;
+        }
+        print_inline(llama.token_to_piece(model, token, false));
+        llama.decode(ctx, [token], n_cur);
+        n_cur = n_cur + 1;
+    }
+    print("\n");
+
+    // Clear and try with different scale
+    print("\n--- Now with reduced LoRA scale (0.5) ---");
+    llama.lora_clear(ctx);
+    llama.lora_apply(ctx, lora, 0.5);
+    llama.kv_cache_clear(ctx);
+    llama.sampler_reset(sampler);
+
+    llama.decode(ctx, tokens, 0);
+    n_cur = tokens.length;
+    for (let i = 0; i < 128; i = i + 1) {
+        let token = llama.sample(sampler, ctx, -1);
+        if (llama.is_eog(model, token)) {
+            break;
+        }
+        print_inline(llama.token_to_piece(model, token, false));
+        llama.decode(ctx, [token], n_cur);
+        n_cur = n_cur + 1;
+    }
+    print("\n");
+
+    // Cleanup
+    llama.sampler_free(sampler);
+    llama.context_free(ctx);
+    llama.lora_free(lora);
+    llama.model_free(model);
+    llama.backend_free();
+
+    print("\nDone!");
+}
+
+main();

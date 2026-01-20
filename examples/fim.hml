@@ -1,0 +1,120 @@
+// fim.hml - Fill-in-Middle code completion
+//
+// Usage:
+//   hemlock examples/fim.hml <code-model.gguf> "<prefix>" "<suffix>"
+//
+// Example:
+//   hemlock examples/fim.hml ~/models/codellama.gguf "def add(a, b):\n    " "\n    return result"
+//
+// Note: This requires a model that supports FIM (e.g., CodeLlama, StarCoder, DeepSeek-Coder)
+
+import * as llama from "../llama.hml";
+
+fn main() {
+    let args = __args();
+    if (args.length < 4) {
+        print("Usage: hemlock examples/fim.hml <code-model.gguf> \"<prefix>\" \"<suffix>\"");
+        print("");
+        print("This example demonstrates Fill-in-Middle (FIM) code completion.");
+        print("Use a code model that supports FIM like CodeLlama, StarCoder, or DeepSeek-Coder.");
+        print("");
+        print("Example:");
+        print("  hemlock examples/fim.hml codellama.gguf \"def add(a, b):\\n    \" \"\\n    return result\"");
+        return;
+    }
+
+    let model_path = args[1];
+    let prefix = args[2];
+    let suffix = args[3];
+
+    print("=== Fill-in-Middle Code Completion ===\n");
+
+    llama.backend_init();
+
+    // Load model
+    print("Loading model: " + model_path);
+    let model = llama.model_load(model_path, {
+        n_gpu_layers: llama.supports_gpu() ? 99 : 0
+    });
+    print("Model: " + llama.model_info(model).description);
+
+    // Check FIM support
+    if (!llama.supports_fim(model)) {
+        print("\nError: This model does not support FIM (Fill-in-Middle).");
+        print("FIM requires special tokens (FIM_PREFIX, FIM_SUFFIX, FIM_MIDDLE).");
+        print("Try using CodeLlama, StarCoder, DeepSeek-Coder, or similar code models.");
+        llama.model_free(model);
+        llama.backend_free();
+        return;
+    }
+
+    // Get FIM tokens
+    let fim = llama.fim_tokens(model);
+    print("\nFIM tokens found:");
+    print("  PREFIX: " + fim.pre + " -> \"" + llama.token_to_piece(model, fim.pre, true) + "\"");
+    print("  SUFFIX: " + fim.suf + " -> \"" + llama.token_to_piece(model, fim.suf, true) + "\"");
+    print("  MIDDLE: " + fim.mid + " -> \"" + llama.token_to_piece(model, fim.mid, true) + "\"");
+
+    // Create context
+    let ctx = llama.context_create(model, {
+        n_ctx: 2048,
+        n_batch: 512
+    });
+
+    // Create infill-optimized sampler chain
+    let sampler = llama.sampler_create({
+        temp: 0.2,  // Lower temperature for more deterministic code
+        top_k: 40,
+        top_p: 0.95,
+        repeat_penalty: 1.0  // No repeat penalty for code
+    });
+
+    // Add infill sampler for better FIM behavior
+    let infill_sampler = llama.sampler_infill(model);
+
+    // Build FIM prompt
+    let fim_prompt = llama.fim_prompt(model, prefix, suffix);
+
+    print("\n--- Input ---");
+    print("Prefix: " + prefix);
+    print("Suffix: " + suffix);
+    print("\n--- Completion ---");
+
+    // Tokenize and decode
+    let tokens = llama.tokenize(model, fim_prompt, { add_special: false, parse_special: true });
+    llama.decode(ctx, tokens, 0);
+
+    // Generate completion
+    let n_cur = tokens.length;
+    let output = "";
+
+    for (let i = 0; i < 256; i = i + 1) {
+        let token = llama.sample(sampler, ctx, -1);
+
+        // Stop on end-of-generation or suffix token
+        if (llama.is_eog(model, token) || token == fim.suf) {
+            break;
+        }
+
+        let piece = llama.token_to_piece(model, token, false);
+        output = output + piece;
+        print_inline(piece);
+
+        llama.decode(ctx, [token], n_cur);
+        n_cur = n_cur + 1;
+    }
+
+    print("\n\n--- Full Result ---");
+    print(prefix + output + suffix);
+
+    // Cleanup
+    llama.sampler_free(infill_sampler);
+    llama.sampler_free(sampler);
+    llama.context_free(ctx);
+    llama.model_free(model);
+    llama.backend_free();
+
+    print("\nDone!");
+}
+
+main();
