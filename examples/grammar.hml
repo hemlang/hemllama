@@ -1,0 +1,149 @@
+#!/usr/bin/env hemlock
+// Grammar-constrained generation example: Force the model to output valid JSON
+//
+// Usage:
+//   hemlock examples/grammar.hml <model.gguf> "Describe a person"
+
+import "llama" from "../llama.hml";
+
+fn main(args) {
+    if (args.length < 3) {
+        print("Usage: hemlock examples/grammar.hml <model.gguf> <prompt>");
+        print("");
+        print("Example:");
+        print("  hemlock examples/grammar.hml ~/models/llama-7b.gguf \"Describe a fictional character\"");
+        return 1;
+    }
+
+    let model_path = args[1];
+    let user_prompt = args[2];
+
+    print("Loading model: " + model_path);
+    print("");
+
+    // Initialize backend
+    llama.backend_init();
+
+    // Load model
+    let model = llama.model_load(model_path, {
+        n_gpu_layers: 0
+    });
+
+    let info = llama.model_info(model);
+    print("Model: " + info.description);
+    print("");
+
+    // Create context
+    let ctx = llama.context_create(model, {
+        n_ctx: 2048,
+        n_batch: 512
+    });
+
+    // Define a GBNF grammar for JSON output
+    // This grammar constrains output to a JSON object with specific fields
+    let json_grammar = "root   ::= \"{\" ws members ws \"}\" ws\n" +
+        "members ::= pair (\",\" ws pair)*\n" +
+        "pair    ::= string ws \":\" ws value\n" +
+        "string  ::= \"\\\"\" ([^\"\\\\] | \"\\\\\" [\"\\\\/bfnrt])* \"\\\"\"\n" +
+        "value   ::= string | number | \"true\" | \"false\" | \"null\" | object | array\n" +
+        "object  ::= \"{\" ws (pair (\",\" ws pair)*)? ws \"}\"\n" +
+        "array   ::= \"[\" ws (value (\",\" ws value)*)? ws \"]\"\n" +
+        "number  ::= \"-\"? [0-9]+ (\".\" [0-9]+)?\n" +
+        "ws      ::= [ \\t\\n]*\n";
+
+    print("=== GBNF Grammar ===");
+    print(json_grammar);
+    print("====================");
+    print("");
+
+    // Build the prompt that asks the model to produce JSON
+    let prompt = "You must respond with a JSON object.\n\n" +
+        "Task: " + user_prompt + "\n\n" +
+        "Include the fields: name, age, occupation, description.\n\n" +
+        "JSON:\n";
+
+    // Tokenize prompt
+    let tokens = llama.tokenize(model, prompt, { add_special: true });
+    print("Prompt tokens: " + tokens.length);
+
+    // Decode prompt
+    let result = llama.decode(ctx, tokens, 0);
+    if (result != 0) {
+        print("Error decoding prompt: " + result);
+        return 1;
+    }
+
+    // Create a sampler chain with grammar constraint
+    let chain = llama.sampler_chain_init();
+
+    // Add temperature
+    llama.sampler_chain_add(chain, llama.sampler_init_temp(0.7));
+
+    // Add top-k and top-p
+    llama.sampler_chain_add(chain, llama.sampler_init_top_k(40));
+    llama.sampler_chain_add(chain, llama.sampler_init_top_p(0.9, 1));
+
+    // Add the grammar sampler - this constrains output to valid JSON
+    let grammar_sampler = llama.sampler_init_grammar(model, json_grammar, "root");
+    llama.sampler_chain_add(chain, grammar_sampler);
+
+    // Add distribution sampler for final selection
+    llama.sampler_chain_add(chain, llama.sampler_init_dist(42));
+
+    // Print sampler chain info
+    let n_samplers = llama.sampler_chain_n(chain);
+    print("Sampler chain has " + n_samplers + " samplers:");
+    for (let i = 0; i < n_samplers; i = i + 1) {
+        let s = llama.sampler_chain_get(chain, i);
+        print("  [" + i + "] " + llama.sampler_name(s));
+    }
+    print("");
+
+    // Generate
+    print("=== Grammar-Constrained JSON Output ===");
+    print("");
+
+    let output = "";
+    let n_cur = tokens.length;
+    let max_tokens = 512;
+
+    for (let i = 0; i < max_tokens; i = i + 1) {
+        let token = llama.sample(chain, ctx, -1);
+
+        if (llama.is_eog(model, token)) {
+            break;
+        }
+
+        let piece = llama.token_to_piece(model, token, false);
+        output = output + piece;
+        print_inline(piece);
+
+        result = llama.decode(ctx, [token], n_cur);
+        if (result != 0) {
+            break;
+        }
+
+        n_cur = n_cur + 1;
+    }
+
+    print("");
+    print("");
+    print("=== End Output ===");
+    print("");
+    print("The output above is guaranteed to be valid JSON by the grammar constraint.");
+
+    // Cleanup
+    llama.sampler_free(chain);
+    llama.context_free(ctx);
+    llama.model_free(model);
+    llama.backend_free();
+
+    return 0;
+}
+
+fn print_inline(text) {
+    io.write(io.stdout, text);
+    io.flush(io.stdout);
+}
+
+main(args);

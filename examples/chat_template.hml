@@ -1,0 +1,143 @@
+#!/usr/bin/env hemlock
+// Chat template example: Use the model's built-in chat template for proper
+// message formatting (supports ChatML, Llama, Mistral, etc.)
+//
+// Usage:
+//   hemlock examples/chat_template.hml <model.gguf>
+
+import "llama" from "../llama.hml";
+
+fn main(args) {
+    if (args.length < 2) {
+        print("Usage: hemlock examples/chat_template.hml <model.gguf>");
+        return 1;
+    }
+
+    let model_path = args[1];
+
+    print("Loading model: " + model_path);
+    print("");
+
+    // Initialize backend
+    llama.backend_init();
+
+    // Load model
+    let model = llama.model_load(model_path, {
+        n_gpu_layers: 0
+    });
+
+    let info = llama.model_info(model);
+    print("Model: " + info.description);
+
+    // Retrieve and display the model's chat template
+    let tmpl = llama.chat_template(model, null);
+    if (tmpl == "") {
+        print("Warning: Model has no built-in chat template.");
+        print("Using a default ChatML template instead.");
+        tmpl = null;
+    } else {
+        print("Chat template found (" + tmpl.length + " chars)");
+        print("");
+        print("--- Raw Template ---");
+        // Show just the first part
+        if (tmpl.length > 200) {
+            print(tmpl.slice(0, 200) + "...");
+        } else {
+            print(tmpl);
+        }
+        print("--- End Template ---");
+    }
+
+    print("");
+
+    // Format a multi-turn conversation
+    let messages = [
+        { role: "system", content: "You are a helpful assistant that answers concisely." },
+        { role: "user", content: "What is the capital of France?" },
+        { role: "assistant", content: "Paris." },
+        { role: "user", content: "And what about Germany?" }
+    ];
+
+    // Apply the chat template
+    let formatted = llama.apply_chat_template(model, messages, {
+        add_generation_prompt: true,
+        template: tmpl
+    });
+
+    print("=== Formatted Conversation ===");
+    print(formatted);
+    print("=== End ===");
+    print("");
+
+    // Create context for generation
+    let ctx = llama.context_create(model, {
+        n_ctx: 2048,
+        n_batch: 512
+    });
+
+    // Create sampler
+    let sampler = llama.sampler_create({
+        temp: 0.7,
+        top_k: 40,
+        top_p: 0.9
+    });
+
+    // Tokenize the formatted prompt
+    let tokens = llama.tokenize(model, formatted, {
+        add_special: false,  // Template already includes special tokens
+        parse_special: true
+    });
+
+    print("Prompt tokens: " + tokens.length);
+    print("");
+
+    // Decode prompt
+    let result = llama.decode(ctx, tokens, 0);
+    if (result != 0) {
+        print("Error decoding prompt: " + result);
+        return 1;
+    }
+
+    // Generate response
+    print("=== Model Response ===");
+    print("");
+
+    let n_cur = tokens.length;
+    let max_tokens = 256;
+
+    for (let i = 0; i < max_tokens; i = i + 1) {
+        let token = llama.sample(sampler, ctx, -1);
+
+        if (llama.is_eog(model, token)) {
+            break;
+        }
+
+        let piece = llama.token_to_piece(model, token, false);
+        print_inline(piece);
+
+        result = llama.decode(ctx, [token], n_cur);
+        if (result != 0) {
+            break;
+        }
+
+        n_cur = n_cur + 1;
+    }
+
+    print("");
+    print("");
+
+    // Cleanup
+    llama.sampler_free(sampler);
+    llama.context_free(ctx);
+    llama.model_free(model);
+    llama.backend_free();
+
+    return 0;
+}
+
+fn print_inline(text) {
+    io.write(io.stdout, text);
+    io.flush(io.stdout);
+}
+
+main(args);

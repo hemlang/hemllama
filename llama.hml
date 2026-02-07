@@ -46,6 +46,36 @@ export let ROPE_SCALING_NONE = 0;
 export let ROPE_SCALING_LINEAR = 1;
 export let ROPE_SCALING_YARN = 2;
 
+// Token attributes
+export let TOKEN_ATTR_UNDEFINED = 0;
+export let TOKEN_ATTR_UNKNOWN = 1;
+export let TOKEN_ATTR_UNUSED = 2;
+export let TOKEN_ATTR_NORMAL = 4;
+export let TOKEN_ATTR_CONTROL = 8;
+export let TOKEN_ATTR_USER_DEFINED = 16;
+export let TOKEN_ATTR_BYTE = 32;
+export let TOKEN_ATTR_LSTRIP = 64;
+export let TOKEN_ATTR_RSTRIP = 128;
+export let TOKEN_ATTR_SINGLE_WORD = 256;
+
+// Quantization types
+export let FTYPE_ALL_F32 = 0;
+export let FTYPE_MOSTLY_F16 = 1;
+export let FTYPE_MOSTLY_Q4_0 = 2;
+export let FTYPE_MOSTLY_Q4_1 = 3;
+export let FTYPE_MOSTLY_Q5_0 = 8;
+export let FTYPE_MOSTLY_Q5_1 = 9;
+export let FTYPE_MOSTLY_Q8_0 = 7;
+export let FTYPE_MOSTLY_Q2_K = 10;
+export let FTYPE_MOSTLY_Q3_K_S = 11;
+export let FTYPE_MOSTLY_Q3_K_M = 12;
+export let FTYPE_MOSTLY_Q3_K_L = 13;
+export let FTYPE_MOSTLY_Q4_K_S = 14;
+export let FTYPE_MOSTLY_Q4_K_M = 15;
+export let FTYPE_MOSTLY_Q5_K_S = 16;
+export let FTYPE_MOSTLY_Q5_K_M = 17;
+export let FTYPE_MOSTLY_Q6_K = 18;
+
 // ============================================================================
 // Low-level FFI declarations
 // ============================================================================
@@ -170,6 +200,41 @@ extern fn llama_sampler_get_seed(sampler: ptr): u32;
 // Chat templates
 extern fn llama_model_chat_template(model: ptr, name: ptr): ptr;
 extern fn llama_chat_apply_template(tmpl: ptr, chat: ptr, n_msg: u64, add_ass: i32, buf: ptr, length: i32): i32;
+
+// Grammar-based sampling
+extern fn llama_sampler_init_grammar(vocab: ptr, grammar_str: string, grammar_root: string): ptr;
+
+// Logit bias sampling
+extern fn llama_sampler_init_logit_bias(n_vocab: i32, n_logit_bias: i32, logit_bias: ptr): ptr;
+
+// Infill (fill-in-the-middle) sampling
+extern fn llama_sampler_init_infill(vocab: ptr): ptr;
+
+// LoRA adapter functions
+extern fn llama_lora_adapter_init(model: ptr, path: string): ptr;
+extern fn llama_lora_adapter_free(adapter: ptr): void;
+extern fn llama_lora_adapter_set(ctx: ptr, adapter: ptr, scale: f32): i32;
+extern fn llama_lora_adapter_remove(ctx: ptr, adapter: ptr): i32;
+extern fn llama_lora_adapter_clear(ctx: ptr): void;
+
+// State save/load
+extern fn llama_state_get_size(ctx: ptr): u64;
+extern fn llama_state_get_data(ctx: ptr, dst: ptr, size: u64): u64;
+extern fn llama_state_set_data(ctx: ptr, src: ptr, size: u64): u64;
+extern fn llama_state_seq_get_size(ctx: ptr, seq_id: i32): u64;
+extern fn llama_state_seq_get_data(ctx: ptr, dst: ptr, size: u64, seq_id: i32): u64;
+extern fn llama_state_seq_set_data(ctx: ptr, src: ptr, size: u64, seq_id: i32): u64;
+
+// Pooling type
+extern fn llama_pooling_type(ctx: ptr): i32;
+
+// Vocab score/attributes
+extern fn llama_vocab_get_score(vocab: ptr, token: i32): f32;
+extern fn llama_vocab_get_attr(vocab: ptr, token: i32): i32;
+
+// Model quantization
+extern fn llama_model_quantize(fname_inp: string, fname_out: string, params: ptr): i32;
+extern fn llama_model_quantize_default_params(): ptr;
 
 // Utilities
 extern fn llama_time_us(): i64;
@@ -851,6 +916,40 @@ export fn sampler_init_penalties(last_n: i32, repeat: f32, freq: f32, presence: 
     return llama_sampler_init_penalties(last_n, repeat, freq, presence);
 }
 
+// Create grammar-based sampler for constrained generation
+// grammar_str: GBNF grammar string
+// grammar_root: root rule name (typically "root")
+export fn sampler_init_grammar(model: ptr, grammar_str: string, grammar_root: string): ptr {
+    let vocab = llama_model_get_vocab(model);
+    return llama_sampler_init_grammar(vocab, grammar_str, grammar_root);
+}
+
+// Create logit bias sampler
+// biases: array of { token: i32, bias: f32 }
+export fn sampler_init_logit_bias(model: ptr, biases: array): ptr {
+    let vocab = llama_model_get_vocab(model);
+    let n_vocab = llama_vocab_n_tokens(vocab);
+    let n_biases = biases.length;
+
+    // Each logit_bias entry is 8 bytes (i32 token + f32 bias)
+    let bias_buf = alloc(n_biases * 8);
+    for (let i = 0; i < n_biases; i = i + 1) {
+        let entry = biases[i];
+        ptr_write_i32(ptr_offset(bias_buf, i * 8, 1), entry.token);
+        ptr_write_f32(ptr_offset(bias_buf, i * 8 + 4, 1), entry.bias);
+    }
+
+    let sampler = llama_sampler_init_logit_bias(n_vocab, n_biases, bias_buf);
+    free(bias_buf);
+    return sampler;
+}
+
+// Create infill sampler (for fill-in-the-middle / code completion)
+export fn sampler_init_infill(model: ptr): ptr {
+    let vocab = llama_model_get_vocab(model);
+    return llama_sampler_init_infill(vocab);
+}
+
 // Create empty sampler chain
 export fn sampler_chain_init(): ptr {
     let chain_params = alloc(8);
@@ -881,9 +980,9 @@ export fn decode(ctx: ptr, tokens: array, pos: i32): i32 {
     }
 
     // Create batch using llama_batch_get_one for simple single-sequence use
-    // The batch struct is 48 bytes
-    let batch = alloc(48);
-    memset(batch, 0, 48);
+    // The batch struct is 56 bytes (i32 n_tokens + 4 padding + 6 pointers)
+    let batch = alloc(56);
+    memset(batch, 0, 56);
 
     // n_tokens at offset 0
     ptr_write_i32(batch, n_tokens);
@@ -933,9 +1032,9 @@ export fn encode(ctx: ptr, tokens: array): i32 {
         ptr_write_i32(ptr_offset(tokens_buf, i, 4), tokens[i]);
     }
 
-    // Create batch struct (48 bytes)
-    let batch = alloc(48);
-    memset(batch, 0, 48);
+    // Create batch struct (56 bytes: i32 n_tokens + 4 padding + 6 pointers)
+    let batch = alloc(56);
+    memset(batch, 0, 56);
 
     // n_tokens at offset 0
     ptr_write_i32(batch, n_tokens);
@@ -1078,6 +1177,167 @@ export fn perf_sampler_reset(sampler: ptr) {
 // Get current time in microseconds
 export fn time_us(): i64 {
     return llama_time_us();
+}
+
+// ============================================================================
+// LoRA Adapter functions
+// ============================================================================
+
+// Load a LoRA adapter from file
+// Returns adapter pointer (null on failure)
+export fn lora_adapter_init(model: ptr, path: string): ptr {
+    let adapter = llama_lora_adapter_init(model, path);
+    if (adapter == null) {
+        throw "Failed to load LoRA adapter: " + path;
+    }
+    return adapter;
+}
+
+// Free a LoRA adapter
+export fn lora_adapter_free(adapter: ptr) {
+    if (adapter != null) {
+        llama_lora_adapter_free(adapter);
+    }
+}
+
+// Apply a LoRA adapter to a context with a given scale
+// scale: 1.0 for full effect, 0.0 to disable
+export fn lora_adapter_set(ctx: ptr, adapter: ptr, scale: f32): i32 {
+    return llama_lora_adapter_set(ctx, adapter, scale);
+}
+
+// Remove a specific LoRA adapter from a context
+export fn lora_adapter_remove(ctx: ptr, adapter: ptr): i32 {
+    return llama_lora_adapter_remove(ctx, adapter);
+}
+
+// Remove all LoRA adapters from a context
+export fn lora_adapter_clear(ctx: ptr) {
+    llama_lora_adapter_clear(ctx);
+}
+
+// ============================================================================
+// State Save/Load functions
+// ============================================================================
+
+// Get the size needed to save the full context state
+export fn state_get_size(ctx: ptr): u64 {
+    return llama_state_get_size(ctx);
+}
+
+// Save full context state to a buffer
+// Returns the number of bytes written
+export fn state_save(ctx: ptr): ptr {
+    let size = llama_state_get_size(ctx);
+    let buf = alloc(size);
+    let written = llama_state_get_data(ctx, buf, size);
+    if (written == 0) {
+        free(buf);
+        throw "Failed to save state";
+    }
+    return { data: buf, size: written };
+}
+
+// Restore full context state from a buffer
+export fn state_load(ctx: ptr, state: object) {
+    let read = llama_state_set_data(ctx, state.data, state.size);
+    if (read == 0) {
+        throw "Failed to load state";
+    }
+}
+
+// Free a saved state
+export fn state_free(state: object) {
+    if (state != null && state.data != null) {
+        free(state.data);
+    }
+}
+
+// Get the size needed to save a single sequence state
+export fn state_seq_get_size(ctx: ptr, seq_id: i32): u64 {
+    return llama_state_seq_get_size(ctx, seq_id);
+}
+
+// Save a single sequence state
+export fn state_seq_save(ctx: ptr, seq_id: i32): object {
+    let size = llama_state_seq_get_size(ctx, seq_id);
+    let buf = alloc(size);
+    let written = llama_state_seq_get_data(ctx, buf, size, seq_id);
+    if (written == 0) {
+        free(buf);
+        throw "Failed to save sequence state";
+    }
+    return { data: buf, size: written };
+}
+
+// Restore a single sequence state
+export fn state_seq_load(ctx: ptr, state: object, seq_id: i32) {
+    let read = llama_state_seq_set_data(ctx, state.data, state.size, seq_id);
+    if (read == 0) {
+        throw "Failed to load sequence state";
+    }
+}
+
+// ============================================================================
+// Vocabulary inspection functions
+// ============================================================================
+
+// Get the score of a token in the vocabulary
+export fn vocab_get_score(model: ptr, token: i32): f32 {
+    let vocab = llama_model_get_vocab(model);
+    return llama_vocab_get_score(vocab, token);
+}
+
+// Get the attributes of a token
+export fn vocab_get_attr(model: ptr, token: i32): i32 {
+    let vocab = llama_model_get_vocab(model);
+    return llama_vocab_get_attr(vocab, token);
+}
+
+// Get the pooling type used by the context
+export fn pooling_type(ctx: ptr): i32 {
+    return llama_pooling_type(ctx);
+}
+
+// ============================================================================
+// Model Quantization functions
+// ============================================================================
+
+// Quantize a model to a different format
+// Options:
+//   ftype: target quantization type (e.g., FTYPE_MOSTLY_Q4_0)
+//   n_threads: number of threads (default: 0 = auto)
+export fn model_quantize(input_path: string, output_path: string, options): i32 {
+    let opts = options || {};
+
+    // Allocate quantize params struct (approximately 64 bytes)
+    let params = alloc(64);
+    memset(params, 0, 64);
+
+    // nthread at offset 0
+    let n_threads = opts.n_threads || 0;
+    ptr_write_i32(params, n_threads);
+
+    // ftype at offset 4
+    let ftype = opts.ftype || FTYPE_MOSTLY_Q4_0;
+    ptr_write_i32(ptr_offset(params, 4, 1), ftype);
+
+    // allow_requantize at offset 8
+    let allow_requantize = opts.allow_requantize == true ? 1 : 0;
+    ptr_write_u8(ptr_offset(params, 8, 1), allow_requantize);
+
+    // quantize_output_tensor at offset 9
+    let quantize_output = opts.quantize_output_tensor != false ? 1 : 0;
+    ptr_write_u8(ptr_offset(params, 9, 1), quantize_output);
+
+    let result = llama_model_quantize(input_path, output_path, params);
+    free(params);
+
+    if (result != 0) {
+        throw "Failed to quantize model: error code " + result;
+    }
+
+    return result;
 }
 
 // ============================================================================

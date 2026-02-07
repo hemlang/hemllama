@@ -1,0 +1,203 @@
+#!/usr/bin/env hemlock
+// Model info example: Inspect model metadata, architecture, and system capabilities
+//
+// Usage:
+//   hemlock examples/model_info.hml <model.gguf>
+
+import "llama" from "../llama.hml";
+
+fn main(args) {
+    if (args.length < 2) {
+        print("Usage: hemlock examples/model_info.hml <model.gguf>");
+        print("");
+        print("Example:");
+        print("  hemlock examples/model_info.hml ~/models/llama-7b.gguf");
+        return 1;
+    }
+
+    let model_path = args[1];
+
+    // Initialize backend
+    llama.backend_init();
+
+    // =============================================
+    // System Information
+    // =============================================
+    print("=== System Information ===");
+    print("");
+
+    let sys_info = llama.system_info();
+    print("System: " + sys_info);
+    print("");
+
+    print("GPU offload:   " + (llama.supports_gpu() ? "supported" : "not available"));
+    print("Memory map:    " + (llama.supports_mmap() ? "supported" : "not available"));
+    print("Memory lock:   " + (llama.supports_mlock() ? "supported" : "not available"));
+    print("Max devices:   " + llama.max_devices());
+    print("");
+
+    // =============================================
+    // Model Loading
+    // =============================================
+    print("=== Loading Model ===");
+    print("Path: " + model_path);
+    print("");
+
+    let load_start = llama.time_us();
+
+    let model = llama.model_load(model_path, {
+        n_gpu_layers: 0,
+        use_mmap: true
+    });
+
+    let load_time = (llama.time_us() - load_start) / 1000;
+    print("Load time: " + load_time + " ms");
+    print("");
+
+    // =============================================
+    // Model Architecture
+    // =============================================
+    let info = llama.model_info(model);
+
+    print("=== Model Architecture ===");
+    print("");
+    print("Description:     " + info.description);
+    print("Parameters:      " + format_count(info.n_params));
+    print("Model size:      " + format_bytes(info.size));
+    print("Context (train): " + info.n_ctx_train + " tokens");
+    print("Embedding dim:   " + info.n_embd);
+    print("Layers:          " + info.n_layer);
+    print("Attention heads: " + info.n_head);
+    print("Has encoder:     " + info.has_encoder);
+    print("Has decoder:     " + info.has_decoder);
+    print("Is recurrent:    " + info.is_recurrent);
+    print("");
+
+    // =============================================
+    // Vocabulary
+    // =============================================
+    let vocab = llama.vocab_info(model);
+
+    let vocab_type_names = ["None", "SPM (SentencePiece)", "BPE (Byte-Pair)", "WPM (WordPiece)", "UGM (Unigram)", "RWKV"];
+    let type_name = vocab.type < vocab_type_names.length ? vocab_type_names[vocab.type] : "Unknown (" + vocab.type + ")";
+
+    print("=== Vocabulary ===");
+    print("");
+    print("Type:            " + type_name);
+    print("Total tokens:    " + vocab.n_tokens);
+    print("BOS token:       " + vocab.bos_token);
+    print("EOS token:       " + vocab.eos_token);
+    print("EOT token:       " + vocab.eot_token);
+    print("Newline token:   " + vocab.nl_token);
+    print("Pad token:       " + vocab.pad_token);
+    print("Auto-add BOS:    " + vocab.add_bos);
+    print("Auto-add EOS:    " + vocab.add_eos);
+    print("");
+
+    // =============================================
+    // Chat Template
+    // =============================================
+    print("=== Chat Template ===");
+    print("");
+
+    let tmpl = llama.chat_template(model, null);
+    if (tmpl == "") {
+        print("No chat template found in model.");
+    } else {
+        print("Template found (" + tmpl.length + " characters):");
+        print("");
+        // Show a preview
+        if (tmpl.length > 500) {
+            print(tmpl.slice(0, 500));
+            print("... (" + (tmpl.length - 500) + " more characters)");
+        } else {
+            print(tmpl);
+        }
+    }
+    print("");
+
+    // =============================================
+    // Context Test
+    // =============================================
+    print("=== Context Information ===");
+    print("");
+
+    let ctx = llama.context_create(model, {
+        n_ctx: 2048,
+        n_batch: 512,
+        n_threads: 0
+    });
+
+    let ctx_info = llama.context_info(ctx);
+    print("Context size:    " + ctx_info.n_ctx + " tokens");
+    print("Batch size:      " + ctx_info.n_batch);
+    print("Micro-batch:     " + ctx_info.n_ubatch);
+    print("Max sequences:   " + ctx_info.n_seq_max);
+    print("Threads:         " + ctx_info.n_threads);
+    print("Threads (batch): " + ctx_info.n_threads_batch);
+    print("");
+
+    // =============================================
+    // Quick Tokenization Benchmark
+    // =============================================
+    print("=== Tokenization Benchmark ===");
+    print("");
+
+    let bench_text = "The quick brown fox jumps over the lazy dog. " +
+        "In the beginning, there was nothing. Then, something happened. " +
+        "A long time ago in a galaxy far, far away... " +
+        "To be or not to be, that is the question.";
+
+    let bench_iters = 100;
+    let bench_start = llama.time_us();
+
+    for (let i = 0; i < bench_iters; i = i + 1) {
+        let tokens = llama.tokenize(model, bench_text, { add_special: true });
+    }
+
+    let bench_time = (llama.time_us() - bench_start) / 1000;
+    let tokens = llama.tokenize(model, bench_text, { add_special: true });
+
+    print("Text length:     " + bench_text.length + " chars");
+    print("Token count:     " + tokens.length + " tokens");
+    print("Iterations:      " + bench_iters);
+    print("Total time:      " + bench_time + " ms");
+    print("Per iteration:   " + (bench_time / bench_iters) + " ms");
+    print("");
+
+    // Cleanup
+    llama.context_free(ctx);
+    llama.model_free(model);
+    llama.backend_free();
+
+    print("Done.");
+    return 0;
+}
+
+fn format_bytes(bytes: u64): string {
+    if (bytes >= 1073741824) {
+        return (bytes / 1073741824) + " GB";
+    }
+    if (bytes >= 1048576) {
+        return (bytes / 1048576) + " MB";
+    }
+    if (bytes >= 1024) {
+        return (bytes / 1024) + " KB";
+    }
+    return bytes + " B";
+}
+
+fn format_count(n: u64): string {
+    if (n >= 1000000000) {
+        return (n / 1000000000) + "." + ((n / 100000000) % 10) + "B";
+    }
+    if (n >= 1000000) {
+        return (n / 1000000) + "." + ((n / 100000) % 10) + "M";
+    }
+    if (n >= 1000) {
+        return (n / 1000) + "." + ((n / 100) % 10) + "K";
+    }
+    return "" + n;
+}
+
+main(args);

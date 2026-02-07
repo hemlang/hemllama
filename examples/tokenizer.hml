@@ -1,0 +1,207 @@
+#!/usr/bin/env hemlock
+// Tokenizer exploration example: Inspect tokens, vocabulary, and tokenization
+//
+// Usage:
+//   hemlock examples/tokenizer.hml <model.gguf> ["text to tokenize"]
+
+import "llama" from "../llama.hml";
+
+fn main(args) {
+    if (args.length < 2) {
+        print("Usage: hemlock examples/tokenizer.hml <model.gguf> [\"text to tokenize\"]");
+        print("");
+        print("Example:");
+        print("  hemlock examples/tokenizer.hml ~/models/llama-7b.gguf \"Hello, world!\"");
+        return 1;
+    }
+
+    let model_path = args[1];
+    let input_text = args.length >= 3 ? args[2] : "The quick brown fox jumps over the lazy dog.";
+
+    print("Loading model: " + model_path);
+    print("");
+
+    // Initialize backend
+    llama.backend_init();
+
+    // Load model (vocab only would be ideal, but we load full model)
+    let model = llama.model_load(model_path, {
+        n_gpu_layers: 0,
+        use_mmap: true
+    });
+
+    // Display vocabulary information
+    let vocab = llama.vocab_info(model);
+
+    let vocab_type_names = ["None", "SPM (SentencePiece)", "BPE (Byte-Pair)", "WPM (WordPiece)", "UGM (Unigram)", "RWKV"];
+    let type_name = vocab.type < vocab_type_names.length ? vocab_type_names[vocab.type] : "Unknown";
+
+    print("=== Vocabulary Info ===");
+    print("  Type:       " + type_name);
+    print("  Tokens:     " + vocab.n_tokens);
+    print("  BOS token:  " + vocab.bos_token + " -> \"" + llama.vocab_get_text(model, vocab.bos_token) + "\"");
+    print("  EOS token:  " + vocab.eos_token + " -> \"" + llama.vocab_get_text(model, vocab.eos_token) + "\"");
+
+    if (vocab.eot_token != -1) {
+        print("  EOT token:  " + vocab.eot_token + " -> \"" + llama.vocab_get_text(model, vocab.eot_token) + "\"");
+    }
+
+    print("  NL token:   " + vocab.nl_token + " -> \"" + llama.vocab_get_text(model, vocab.nl_token) + "\"");
+
+    if (vocab.pad_token != -1) {
+        print("  PAD token:  " + vocab.pad_token + " -> \"" + llama.vocab_get_text(model, vocab.pad_token) + "\"");
+    }
+
+    print("  Add BOS:    " + vocab.add_bos);
+    print("  Add EOS:    " + vocab.add_eos);
+    print("");
+
+    // Show some sample vocab entries
+    print("=== Sample Vocabulary Entries ===");
+    let n_show = 20;
+    if (n_show > vocab.n_tokens) {
+        n_show = vocab.n_tokens;
+    }
+
+    print("First " + n_show + " tokens:");
+    for (let i = 0; i < n_show; i = i + 1) {
+        let text = llama.vocab_get_text(model, i);
+        let score = llama.vocab_get_score(model, i);
+        let attr = llama.vocab_get_attr(model, i);
+        let is_ctrl = llama.is_control(model, i);
+        let attr_str = format_attr(attr);
+
+        print("  [" + pad_num(i, 5) + "] " +
+              "score=" + pad_float(score, 10) + "  " +
+              "attr=" + attr_str + "  " +
+              (is_ctrl ? "(ctrl) " : "       ") +
+              "\"" + escape_str(text) + "\"");
+    }
+    print("");
+
+    // Tokenize the input text
+    print("=== Tokenization ===");
+    print("Input: \"" + input_text + "\"");
+    print("");
+
+    // Tokenize with special tokens
+    let tokens_with = llama.tokenize(model, input_text, {
+        add_special: true,
+        parse_special: false
+    });
+
+    // Tokenize without special tokens
+    let tokens_without = llama.tokenize(model, input_text, {
+        add_special: false,
+        parse_special: false
+    });
+
+    print("With special tokens:    " + tokens_with.length + " tokens");
+    print("Without special tokens: " + tokens_without.length + " tokens");
+    print("");
+
+    // Show detailed token breakdown
+    print("Token breakdown (with specials):");
+    for (let i = 0; i < tokens_with.length; i = i + 1) {
+        let token = tokens_with[i];
+        let piece = llama.token_to_piece(model, token, true);
+        let is_ctrl = llama.is_control(model, token);
+        let is_eog = llama.is_eog(model, token);
+
+        let flags = "";
+        if (is_ctrl) { flags = flags + " [ctrl]"; }
+        if (is_eog) { flags = flags + " [eog]"; }
+
+        print("  [" + i + "] token=" + pad_num(token, 6) + "  \"" + escape_str(piece) + "\"" + flags);
+    }
+    print("");
+
+    // Round-trip test: detokenize and compare
+    print("=== Round-Trip Test ===");
+    let detokenized = llama.detokenize(model, tokens_without, {
+        remove_special: false,
+        unparse_special: true
+    });
+    print("Original:     \"" + input_text + "\"");
+    print("Detokenized:  \"" + detokenized + "\"");
+    print("Match:        " + (input_text == detokenized ? "YES" : "NO"));
+    print("");
+
+    // Token frequency analysis - show byte coverage
+    print("=== Token Length Distribution ===");
+    let lengths = {};
+    for (let i = 0; i < tokens_without.length; i = i + 1) {
+        let piece = llama.token_to_piece(model, tokens_without[i], false);
+        let len = piece.length;
+        if (lengths[len] == null) {
+            lengths[len] = 0;
+        }
+        lengths[len] = lengths[len] + 1;
+    }
+
+    for (let len = 1; len <= 20; len = len + 1) {
+        if (lengths[len] != null) {
+            let bar = "";
+            for (let j = 0; j < lengths[len]; j = j + 1) {
+                bar = bar + "#";
+            }
+            print("  " + len + " chars: " + bar + " (" + lengths[len] + ")");
+        }
+    }
+
+    // Cleanup
+    llama.model_free(model);
+    llama.backend_free();
+
+    return 0;
+}
+
+fn format_attr(attr: i32): string {
+    let parts = [];
+    if (attr & llama.TOKEN_ATTR_CONTROL) { parts.push("ctrl"); }
+    if (attr & llama.TOKEN_ATTR_NORMAL) { parts.push("normal"); }
+    if (attr & llama.TOKEN_ATTR_BYTE) { parts.push("byte"); }
+    if (attr & llama.TOKEN_ATTR_UNKNOWN) { parts.push("unk"); }
+    if (attr & llama.TOKEN_ATTR_UNUSED) { parts.push("unused"); }
+    if (attr & llama.TOKEN_ATTR_USER_DEFINED) { parts.push("udef"); }
+
+    if (parts.length == 0) {
+        return "none";
+    }
+    return parts.join(",");
+}
+
+fn escape_str(s: string): string {
+    let result = "";
+    for (let i = 0; i < s.length; i = i + 1) {
+        let c = s[i];
+        if (c == "\n") {
+            result = result + "\\n";
+        } else if (c == "\t") {
+            result = result + "\\t";
+        } else if (c == "\r") {
+            result = result + "\\r";
+        } else {
+            result = result + c;
+        }
+    }
+    return result;
+}
+
+fn pad_num(n: i32, width: i32): string {
+    let s = "" + n;
+    while (s.length < width) {
+        s = " " + s;
+    }
+    return s;
+}
+
+fn pad_float(f: f32, width: i32): string {
+    let s = "" + f;
+    while (s.length < width) {
+        s = " " + s;
+    }
+    return s;
+}
+
+main(args);

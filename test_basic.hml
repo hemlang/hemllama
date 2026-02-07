@@ -1,27 +1,196 @@
-// Basic test - just test that FFI loading works
+// Basic tests - verify FFI loading and non-model APIs work
 import * as llama from "./llama.hml";
 
-print("Testing hemllama bindings...");
+let passed = 0;
+let failed = 0;
 
-// Test backend init/free
-print("Initializing backend...");
+fn assert(condition, name) {
+    if (condition) {
+        print("  PASS: " + name);
+        passed = passed + 1;
+    } else {
+        print("  FAIL: " + name);
+        failed = failed + 1;
+    }
+}
+
+// ============================
+// Backend tests
+// ============================
+print("=== Backend ===");
+
 llama.backend_init();
-print("Backend initialized!");
+assert(true, "backend_init()");
 
-// Skip system_info for now - has FFI type conversion issues
-// let info = llama.system_info();
-// print("System info: " + info);
+assert(llama.supports_gpu() == true || llama.supports_gpu() == false, "supports_gpu() returns bool");
+assert(llama.supports_mmap() == true || llama.supports_mmap() == false, "supports_mmap() returns bool");
+assert(llama.supports_mlock() == true || llama.supports_mlock() == false, "supports_mlock() returns bool");
+assert(llama.max_devices() >= 1, "max_devices() >= 1");
 
-// Test GPU support check
-print("GPU support: " + llama.supports_gpu());
+let t = llama.time_us();
+assert(t > 0, "time_us() > 0");
 
-// Test time function
-print("Current time (us): " + llama.time_us());
+let t2 = llama.time_us();
+assert(t2 >= t, "time_us() is monotonic");
 
-// Cleanup
-print("Freeing backend...");
-llama.backend_free();
-print("Backend freed!");
+let info = llama.system_info();
+assert(info.length > 0, "system_info() returns non-empty string");
 
+// ============================
+// Constants tests
+// ============================
 print("");
-print("All basic tests passed!");
+print("=== Constants ===");
+
+assert(llama.TOKEN_NULL == -1, "TOKEN_NULL == -1");
+assert(llama.DEFAULT_SEED == 0xFFFFFFFF, "DEFAULT_SEED is set");
+
+assert(llama.VOCAB_TYPE_NONE == 0, "VOCAB_TYPE_NONE == 0");
+assert(llama.VOCAB_TYPE_SPM == 1, "VOCAB_TYPE_SPM == 1");
+assert(llama.VOCAB_TYPE_BPE == 2, "VOCAB_TYPE_BPE == 2");
+
+assert(llama.SPLIT_MODE_NONE == 0, "SPLIT_MODE_NONE == 0");
+assert(llama.SPLIT_MODE_LAYER == 1, "SPLIT_MODE_LAYER == 1");
+assert(llama.SPLIT_MODE_ROW == 2, "SPLIT_MODE_ROW == 2");
+
+assert(llama.POOLING_TYPE_NONE == 0, "POOLING_TYPE_NONE == 0");
+assert(llama.POOLING_TYPE_MEAN == 1, "POOLING_TYPE_MEAN == 1");
+assert(llama.POOLING_TYPE_CLS == 2, "POOLING_TYPE_CLS == 2");
+
+assert(llama.TOKEN_ATTR_NORMAL == 4, "TOKEN_ATTR_NORMAL == 4");
+assert(llama.TOKEN_ATTR_CONTROL == 8, "TOKEN_ATTR_CONTROL == 8");
+
+assert(llama.FTYPE_MOSTLY_Q4_0 == 2, "FTYPE_MOSTLY_Q4_0 == 2");
+assert(llama.FTYPE_MOSTLY_Q8_0 == 7, "FTYPE_MOSTLY_Q8_0 == 7");
+
+// ============================
+// Sampler tests (no model needed)
+// ============================
+print("");
+print("=== Samplers ===");
+
+// Greedy sampler
+let greedy = llama.sampler_greedy();
+assert(greedy != null, "sampler_greedy() returns non-null");
+llama.sampler_free(greedy);
+assert(true, "sampler_free(greedy) succeeds");
+
+// Sampler chain
+let chain = llama.sampler_chain_init();
+assert(chain != null, "sampler_chain_init() returns non-null");
+assert(llama.sampler_chain_n(chain) == 0, "empty chain has 0 samplers");
+
+// Add individual samplers
+let temp = llama.sampler_init_temp(0.8);
+assert(temp != null, "sampler_init_temp() returns non-null");
+llama.sampler_chain_add(chain, temp);
+assert(llama.sampler_chain_n(chain) == 1, "chain has 1 sampler after add");
+
+let top_k = llama.sampler_init_top_k(40);
+assert(top_k != null, "sampler_init_top_k() returns non-null");
+llama.sampler_chain_add(chain, top_k);
+assert(llama.sampler_chain_n(chain) == 2, "chain has 2 samplers after add");
+
+let top_p = llama.sampler_init_top_p(0.9, 1);
+assert(top_p != null, "sampler_init_top_p() returns non-null");
+llama.sampler_chain_add(chain, top_p);
+
+let min_p = llama.sampler_init_min_p(0.05, 1);
+assert(min_p != null, "sampler_init_min_p() returns non-null");
+llama.sampler_chain_add(chain, min_p);
+
+let typical = llama.sampler_init_typical(1.0, 1);
+assert(typical != null, "sampler_init_typical() returns non-null");
+llama.sampler_chain_add(chain, typical);
+
+let penalties = llama.sampler_init_penalties(64, 1.1, 0.0, 0.0);
+assert(penalties != null, "sampler_init_penalties() returns non-null");
+llama.sampler_chain_add(chain, penalties);
+
+let dist = llama.sampler_init_dist(42);
+assert(dist != null, "sampler_init_dist() returns non-null");
+llama.sampler_chain_add(chain, dist);
+
+assert(llama.sampler_chain_n(chain) == 7, "chain has 7 samplers total");
+
+// Introspect chain
+let s0 = llama.sampler_chain_get(chain, 0);
+assert(s0 != null, "sampler_chain_get(0) returns non-null");
+let name0 = llama.sampler_name(s0);
+assert(name0.length > 0, "sampler_name() returns non-empty string");
+print("    First sampler name: " + name0);
+
+// Clone
+let cloned = llama.sampler_clone(chain);
+assert(cloned != null, "sampler_clone() returns non-null");
+assert(llama.sampler_chain_n(cloned) == 7, "cloned chain has 7 samplers");
+llama.sampler_free(cloned);
+
+// Reset
+llama.sampler_reset(chain);
+assert(true, "sampler_reset() succeeds");
+
+// Remove
+let removed = llama.sampler_chain_remove(chain, 0);
+assert(removed != null, "sampler_chain_remove() returns non-null");
+assert(llama.sampler_chain_n(chain) == 6, "chain has 6 after remove");
+llama.sampler_free(removed);
+
+llama.sampler_free(chain);
+assert(true, "sampler_free(chain) succeeds");
+
+// High-level sampler_create
+let sampler = llama.sampler_create({
+    temp: 0.7,
+    top_k: 40,
+    top_p: 0.9,
+    min_p: 0.05,
+    repeat_penalty: 1.1,
+    seed: 42
+});
+assert(sampler != null, "sampler_create() returns non-null");
+assert(llama.sampler_chain_n(sampler) >= 3, "sampler_create() builds chain with multiple samplers");
+
+let seed = llama.sampler_get_seed(sampler);
+assert(seed >= 0, "sampler_get_seed() returns valid seed");
+
+llama.sampler_free(sampler);
+assert(true, "sampler_free(created sampler) succeeds");
+
+// Extended temperature
+let temp_ext = llama.sampler_init_temp_ext(0.8, 0.1, 1.0);
+assert(temp_ext != null, "sampler_init_temp_ext() returns non-null");
+llama.sampler_free(temp_ext);
+
+// Mirostat v2
+let miro = llama.sampler_init_mirostat_v2(42, 5.0, 0.1);
+assert(miro != null, "sampler_init_mirostat_v2() returns non-null");
+llama.sampler_free(miro);
+
+// Greedy init
+let greedy2 = llama.sampler_init_greedy();
+assert(greedy2 != null, "sampler_init_greedy() returns non-null");
+llama.sampler_free(greedy2);
+
+// ============================
+// Cleanup
+// ============================
+print("");
+print("=== Cleanup ===");
+llama.backend_free();
+assert(true, "backend_free()");
+
+// ============================
+// Results
+// ============================
+print("");
+print("=============================");
+print("Results: " + passed + " passed, " + failed + " failed");
+print("=============================");
+
+if (failed > 0) {
+    print("SOME TESTS FAILED!");
+    exit(1);
+} else {
+    print("All tests passed!");
+}
