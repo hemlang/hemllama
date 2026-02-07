@@ -62,12 +62,25 @@ jobs:
             echo "hemlock_available=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Run tests
+      - name: Run basic tests (no model required)
         if: steps.install-hemlock.outputs.hemlock_available == 'true'
         run: |
           export LD_LIBRARY_PATH="$(pwd)/lib:$LD_LIBRARY_PATH"
           export DYLD_LIBRARY_PATH="$(pwd)/lib:$DYLD_LIBRARY_PATH"
           hemlock test_basic.hml
+
+      - name: Download tiny test model
+        if: steps.install-hemlock.outputs.hemlock_available == 'true'
+        run: |
+          chmod +x scripts/download_test_model.sh
+          ./scripts/download_test_model.sh
+
+      - name: Run model tests
+        if: steps.install-hemlock.outputs.hemlock_available == 'true'
+        run: |
+          export LD_LIBRARY_PATH="$(pwd)/lib:$LD_LIBRARY_PATH"
+          export DYLD_LIBRARY_PATH="$(pwd)/lib:$DYLD_LIBRARY_PATH"
+          hemlock test_model.hml models/tinyllama-stories-15m-q4_0.gguf
 
       - name: Validate Hemlock source files
         run: |
@@ -97,8 +110,9 @@ jobs:
 
       - name: Check shell scripts
         run: |
-          # Check build.sh for syntax errors
+          # Check build.sh and helper scripts for syntax errors
           bash -n build.sh
+          bash -n scripts/download_test_model.sh
           echo "Shell scripts OK"
 
       - name: Check for common issues
