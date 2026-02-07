@@ -1,0 +1,166 @@
+#!/usr/bin/env hemlock
+// Code infill (fill-in-the-middle) example: Use FIM tokens to complete code
+//
+// Usage:
+//   hemlock examples/infill.hml <code-model.gguf>
+//
+// Requires a model trained with FIM support (e.g., CodeLlama, DeepSeek-Coder, StarCoder)
+
+import "llama" from "../llama.hml";
+
+fn main(args) {
+    if (args.length < 2) {
+        print("Usage: hemlock examples/infill.hml <code-model.gguf>");
+        print("");
+        print("Example:");
+        print("  hemlock examples/infill.hml ~/models/codellama-7b.gguf");
+        return 1;
+    }
+
+    let model_path = args[1];
+
+    print("Loading model: " + model_path);
+    print("");
+
+    // Initialize backend
+    llama.backend_init();
+
+    // Load model
+    let model = llama.model_load(model_path, {
+        n_gpu_layers: 0
+    });
+
+    let info = llama.model_info(model);
+    print("Model: " + info.description);
+    print("");
+
+    // Show some code infill examples
+    let examples = [
+        {
+            description: "Complete a function body",
+            prefix: "def fibonacci(n):\n    \"\"\"Return the nth Fibonacci number.\"\"\"\n",
+            suffix: "\n\nprint(fibonacci(10))\n"
+        },
+        {
+            description: "Fill in a loop condition",
+            prefix: "def binary_search(arr, target):\n    left, right = 0, len(arr) - 1\n    while ",
+            suffix: ":\n        mid = (left + right) // 2\n        if arr[mid] == target:\n            return mid\n        elif arr[mid] < target:\n            left = mid + 1\n        else:\n            right = mid - 1\n    return -1\n"
+        },
+        {
+            description: "Complete an import block",
+            prefix: "import os\nimport sys\n",
+            suffix: "\n\ndef main():\n    data = json.loads(sys.stdin.read())\n    df = pd.DataFrame(data)\n    print(df.describe())\n"
+        }
+    ];
+
+    // Create context
+    let ctx = llama.context_create(model, {
+        n_ctx: 2048,
+        n_batch: 512
+    });
+
+    for (let ex = 0; ex < examples.length; ex = ex + 1) {
+        let example = examples[ex];
+
+        print("=== Example " + (ex + 1) + ": " + example.description + " ===");
+        print("");
+        print("--- Prefix ---");
+        print(example.prefix);
+        print("--- [FILL HERE] ---");
+        print("");
+        print("--- Suffix ---");
+        print(example.suffix);
+        print("");
+
+        // Build infill prompt using FIM tokens
+        // Format: <PRE> prefix <SUF> suffix <MID>
+        // The model then generates the middle part
+        let fim_prompt = "<PRE>" + example.prefix + "<SUF>" + example.suffix + "<MID>";
+
+        // Tokenize with special token parsing
+        let tokens = llama.tokenize(model, fim_prompt, {
+            add_special: true,
+            parse_special: true
+        });
+
+        print("Infill prompt: " + tokens.length + " tokens");
+
+        // Clear KV cache for fresh start
+        llama.kv_cache_clear(ctx);
+
+        // Decode prompt
+        let result = llama.decode(ctx, tokens, 0);
+        if (result != 0) {
+            print("Error decoding: " + result);
+            continue;
+        }
+
+        // Create sampler chain with infill sampler
+        let chain = llama.sampler_chain_init();
+        llama.sampler_chain_add(chain, llama.sampler_init_temp(0.2));  // Low temp for code
+        llama.sampler_chain_add(chain, llama.sampler_init_top_k(20));
+        llama.sampler_chain_add(chain, llama.sampler_init_top_p(0.9, 1));
+        llama.sampler_chain_add(chain, llama.sampler_init_infill(model));
+        llama.sampler_chain_add(chain, llama.sampler_init_dist(42));
+
+        // Generate
+        print("");
+        print("--- Generated Fill ---");
+
+        let output = "";
+        let n_cur = tokens.length;
+        let max_tokens = 256;
+
+        for (let i = 0; i < max_tokens; i = i + 1) {
+            let token = llama.sample(chain, ctx, -1);
+
+            if (llama.is_eog(model, token)) {
+                break;
+            }
+
+            let piece = llama.token_to_piece(model, token, false);
+
+            // Stop if we see the end-of-middle marker
+            if (piece == "
+" || piece == "<EOT>") {
+                break;
+            }
+
+            output = output + piece;
+            print_inline(piece);
+
+            result = llama.decode(ctx, [token], n_cur);
+            if (result != 0) {
+                break;
+            }
+
+            n_cur = n_cur + 1;
+        }
+
+        print("");
+        print("--- End Fill ---");
+        print("");
+
+        // Show the complete result
+        print("--- Complete Code ---");
+        print(example.prefix + output + example.suffix);
+        print("--- End ---");
+        print("");
+
+        llama.sampler_free(chain);
+    }
+
+    // Cleanup
+    llama.context_free(ctx);
+    llama.model_free(model);
+    llama.backend_free();
+
+    return 0;
+}
+
+fn print_inline(text) {
+    io.write(io.stdout, text);
+    io.flush(io.stdout);
+}
+
+main(args);

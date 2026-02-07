@@ -1,0 +1,139 @@
+#!/usr/bin/env hemlock
+// Embeddings example: Generate text embeddings for similarity comparison
+//
+// Usage:
+//   hemlock examples/embeddings.hml <embedding-model.gguf>
+//
+// Requires an embedding model (e.g., nomic-embed, all-MiniLM, bge-small, etc.)
+
+import "llama" from "../llama.hml";
+
+fn main(args) {
+    if (args.length < 2) {
+        print("Usage: hemlock examples/embeddings.hml <embedding-model.gguf>");
+        print("");
+        print("Example:");
+        print("  hemlock examples/embeddings.hml ~/models/nomic-embed-text-v1.5.Q4_K_M.gguf");
+        return 1;
+    }
+
+    let model_path = args[1];
+
+    print("Loading embedding model: " + model_path);
+    print("");
+
+    // Initialize backend
+    llama.backend_init();
+
+    // Load model
+    let model = llama.model_load(model_path, {
+        n_gpu_layers: 0
+    });
+
+    let info = llama.model_info(model);
+    print("Model: " + info.description);
+    print("Embedding dimensions: " + info.n_embd);
+    print("");
+
+    // Create context with embeddings enabled
+    let ctx = llama.context_create(model, {
+        n_ctx: 512,
+        n_batch: 512,
+        embeddings: true
+    });
+
+    // Check pooling type
+    let pool_type = llama.pooling_type(ctx);
+    let pool_names = ["none", "mean", "cls", "last"];
+    let pool_name = pool_type >= 0 && pool_type < pool_names.length ? pool_names[pool_type] : "unknown";
+    print("Pooling type: " + pool_name);
+    print("");
+
+    // Texts to embed and compare
+    let texts = [
+        "The cat sat on the mat.",
+        "A kitten was sitting on the rug.",
+        "The dog played in the park.",
+        "Machine learning is a subset of artificial intelligence.",
+        "Neural networks can learn from data."
+    ];
+
+    // Generate embeddings for each text
+    print("Generating embeddings...");
+    print("");
+
+    let embeddings = [];
+    for (let i = 0; i < texts.length; i = i + 1) {
+        let embd = llama.embed(ctx, model, texts[i]);
+        embeddings.push(embd);
+        print("  [" + i + "] \"" + texts[i] + "\" -> " + embd.length + " dims");
+
+        // Clear KV cache between texts
+        llama.kv_cache_clear(ctx);
+    }
+
+    print("");
+    print("=== Cosine Similarity Matrix ===");
+    print("");
+
+    // Compute cosine similarity between all pairs
+    for (let i = 0; i < texts.length; i = i + 1) {
+        for (let j = i + 1; j < texts.length; j = j + 1) {
+            let sim = cosine_similarity(embeddings[i], embeddings[j]);
+            let sim_pct = math_floor(sim * 1000) / 10;
+            print("  [" + i + "] vs [" + j + "]: " + sim_pct + "%");
+        }
+    }
+
+    print("");
+    print("Higher similarity = more semantically related.");
+
+    // Cleanup
+    llama.context_free(ctx);
+    llama.model_free(model);
+    llama.backend_free();
+
+    return 0;
+}
+
+// Compute cosine similarity between two vectors
+fn cosine_similarity(a: array, b: array): f32 {
+    let dot = 0.0;
+    let norm_a = 0.0;
+    let norm_b = 0.0;
+
+    for (let i = 0; i < a.length; i = i + 1) {
+        dot = dot + a[i] * b[i];
+        norm_a = norm_a + a[i] * a[i];
+        norm_b = norm_b + b[i] * b[i];
+    }
+
+    let denom = math_sqrt(norm_a) * math_sqrt(norm_b);
+    if (denom == 0.0) {
+        return 0.0;
+    }
+
+    return dot / denom;
+}
+
+fn math_sqrt(x: f32): f32 {
+    // Newton's method for square root
+    if (x <= 0.0) {
+        return 0.0;
+    }
+    let guess = x / 2.0;
+    for (let i = 0; i < 20; i = i + 1) {
+        guess = (guess + x / guess) / 2.0;
+    }
+    return guess;
+}
+
+fn math_floor(x: f32): i32 {
+    let n = x;
+    if (n < 0) {
+        return n - 1;
+    }
+    return n;
+}
+
+main(args);

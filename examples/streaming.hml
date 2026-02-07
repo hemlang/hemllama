@@ -1,0 +1,124 @@
+#!/usr/bin/env hemlock
+// Streaming generation example: Generate text with real-time output and
+// performance measurement using the generate() callback API
+//
+// Usage:
+//   hemlock examples/streaming.hml <model.gguf> "Your prompt here"
+
+import "llama" from "../llama.hml";
+
+fn main(args) {
+    if (args.length < 3) {
+        print("Usage: hemlock examples/streaming.hml <model.gguf> <prompt>");
+        print("");
+        print("Example:");
+        print("  hemlock examples/streaming.hml ~/models/llama-7b.gguf \"Write a short poem about coding:\"");
+        return 1;
+    }
+
+    let model_path = args[1];
+    let prompt = args[2];
+
+    print("Loading model: " + model_path);
+    print("");
+
+    // Initialize backend
+    llama.backend_init();
+
+    // Load model
+    let model = llama.model_load(model_path, {
+        n_gpu_layers: 0
+    });
+
+    let info = llama.model_info(model);
+    print("Model: " + info.description);
+    print("");
+
+    // Create context
+    let ctx = llama.context_create(model, {
+        n_ctx: 2048,
+        n_batch: 512
+    });
+
+    // Reset performance counters
+    llama.perf_reset(ctx);
+
+    // Track generation statistics
+    let token_count = 0;
+    let start_time = llama.time_us();
+    let first_token_time = 0;
+
+    print("Prompt: \"" + prompt + "\"");
+    print("");
+    print("=== Streaming Output ===");
+    print("");
+
+    // Use the high-level generate() with a streaming callback
+    let result = llama.generate(ctx, model, prompt, {
+        n_predict: 512,
+        temp: 0.8,
+        top_k: 40,
+        top_p: 0.95,
+        min_p: 0.05,
+        repeat_penalty: 1.1,
+
+        // This callback fires for each generated token
+        callback: fn(token, piece) {
+            token_count = token_count + 1;
+
+            if (first_token_time == 0) {
+                first_token_time = llama.time_us();
+            }
+
+            // Stream the token to stdout
+            print_inline(piece);
+
+            // Return true to continue generating
+            return true;
+        }
+    });
+
+    let end_time = llama.time_us();
+
+    print("");
+    print("");
+
+    // Compute and display performance metrics
+    let total_us = end_time - start_time;
+    let total_ms = total_us / 1000;
+
+    print("=== Performance ===");
+    print("Tokens generated:    " + token_count);
+    print("Total time:          " + total_ms + " ms");
+
+    if (first_token_time > 0) {
+        let ttft_ms = (first_token_time - start_time) / 1000;
+        print("Time to first token: " + ttft_ms + " ms");
+    }
+
+    if (token_count > 0 && total_us > 0) {
+        // Tokens per second = tokens / (microseconds / 1000000)
+        let tps = token_count * 1000000 / total_us;
+        print("Tokens/second:       " + tps);
+    }
+
+    print("");
+
+    // Also print llama.cpp's internal performance counters
+    print("=== llama.cpp Performance Counters ===");
+    llama.perf_print(ctx);
+
+    // Cleanup
+    llama.context_free(ctx);
+    llama.model_free(model);
+    llama.backend_free();
+
+    return 0;
+}
+
+fn print_inline(text) {
+    io.write(io.stdout, text);
+    io.flush(io.stdout);
+}
+
+main(args);

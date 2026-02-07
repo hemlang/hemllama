@@ -168,6 +168,33 @@ llama.backend_free();
 - `sample(sampler, ctx, idx)` - Sample a token
 - `sampler_accept(sampler, token)` - Accept a token (for penalties)
 
+### Advanced Samplers
+
+- `sampler_init_grammar(model, grammar_str, root)` - Grammar-constrained sampling (GBNF)
+- `sampler_init_logit_bias(model, biases)` - Logit bias (`[{ token, bias }]`)
+- `sampler_init_infill(model)` - Fill-in-the-middle sampling
+- `sampler_init_top_k(k)` - Top-k sampler
+- `sampler_init_top_p(p, min_keep)` - Nucleus sampler
+- `sampler_init_min_p(p, min_keep)` - Min-p sampler
+- `sampler_init_temp(t)` - Temperature sampler
+- `sampler_init_temp_ext(t, delta, exp)` - Dynamic temperature
+- `sampler_init_typical(p, min_keep)` - Typical probability
+- `sampler_init_mirostat(n_vocab, seed, tau, eta, m)` - Mirostat v1
+- `sampler_init_mirostat_v2(seed, tau, eta)` - Mirostat v2
+- `sampler_init_penalties(last_n, repeat, freq, presence)` - Repetition penalties
+- `sampler_init_greedy()` - Greedy selection
+- `sampler_init_dist(seed)` - Distribution-based selection
+
+### Sampler Chain
+
+- `sampler_chain_init()` - Create empty sampler chain
+- `sampler_chain_add(chain, sampler)` - Add sampler to chain
+- `sampler_chain_n(chain)` - Number of samplers in chain
+- `sampler_chain_get(chain, i)` - Get sampler at index
+- `sampler_chain_remove(chain, i)` - Remove sampler at index
+- `sampler_clone(sampler)` - Clone a sampler
+- `sampler_name(sampler)` - Get sampler name
+
 ### Inference
 
 - `decode(ctx, tokens, pos)` - Decode tokens
@@ -186,9 +213,46 @@ llama.backend_free();
 - `kv_cache_seq_pos_min(ctx, seq_id)` - Get min position
 - `kv_cache_seq_pos_max(ctx, seq_id)` - Get max position
 
+### Embeddings
+
+- `encode(ctx, tokens)` - Encode tokens for embedding models
+- `get_embeddings(ctx)` - Get all embeddings
+- `get_embeddings_ith(ctx, i)` - Get embedding at index
+- `embed(ctx, model, text)` - Convenience: tokenize, encode, extract embedding
+- `pooling_type(ctx)` - Get pooling type (none/mean/cls/last)
+
+### LoRA Adapters
+
+- `lora_adapter_init(model, path)` - Load a LoRA adapter
+- `lora_adapter_free(adapter)` - Free a LoRA adapter
+- `lora_adapter_set(ctx, adapter, scale)` - Apply adapter (scale: 0.0-1.0)
+- `lora_adapter_remove(ctx, adapter)` - Remove a specific adapter
+- `lora_adapter_clear(ctx)` - Remove all adapters
+
+### State Save/Load
+
+- `state_save(ctx)` - Save full context state
+- `state_load(ctx, state)` - Restore full context state
+- `state_free(state)` - Free saved state
+- `state_seq_save(ctx, seq_id)` - Save single sequence
+- `state_seq_load(ctx, state, seq_id)` - Restore single sequence
+- `state_get_size(ctx)` - Get state buffer size
+
+### Vocabulary Inspection
+
+- `vocab_get_text(model, token)` - Get token text
+- `vocab_get_score(model, token)` - Get token score
+- `vocab_get_attr(model, token)` - Get token attributes
+- `is_control(model, token)` - Check if control token
+
+### Model Quantization
+
+- `model_quantize(input, output, options)` - Quantize a model
+  - Options: `ftype`, `n_threads`, `allow_requantize`, `quantize_output_tensor`
+
 ### High-Level
 
-- `generate(ctx, model, prompt, options)` - Generate text
+- `generate(ctx, model, prompt, options)` - Generate text with streaming callback
   - Options: `n_predict`, `sampler`, `stop_tokens`, `callback`
 - `complete(model_path, prompt, options)` - One-shot completion
 
@@ -196,20 +260,45 @@ llama.backend_free();
 
 - `perf_print(ctx)` - Print context performance stats
 - `perf_reset(ctx)` - Reset performance stats
+- `perf_sampler_print(sampler)` - Print sampler performance stats
+- `perf_sampler_reset(sampler)` - Reset sampler performance stats
 - `time_us()` - Get current time in microseconds
 
 ## Examples
 
 See the `examples/` directory:
 
-- `simple.hml` - Basic text generation
-- `chat.hml` - Interactive chat interface
-- `oneshot.hml` - One-shot completion
+| Example | Description |
+|---------|-------------|
+| `simple.hml` | Basic text generation |
+| `chat.hml` | Interactive chat interface |
+| `oneshot.hml` | One-shot completion using `complete()` |
+| `streaming.hml` | Streaming generation with performance metrics |
+| `chat_template.hml` | Chat template formatting (ChatML, Llama, etc.) |
+| `grammar.hml` | Grammar-constrained JSON generation |
+| `embeddings.hml` | Text embeddings and similarity comparison |
+| `tokenizer.hml` | Tokenizer/vocabulary exploration |
+| `infill.hml` | Code infill / fill-in-the-middle (FIM) |
+| `model_info.hml` | Model metadata and system inspection |
 
 Run examples:
 ```bash
 export LD_LIBRARY_PATH="$(pwd)/lib:$LD_LIBRARY_PATH"
+
+# Basic generation
 hemlock examples/simple.hml ~/models/llama-7b.gguf "What is the meaning of life?"
+
+# Interactive chat
+hemlock examples/chat.hml ~/models/llama-7b-chat.gguf
+
+# Grammar-constrained JSON output
+hemlock examples/grammar.hml ~/models/llama-7b.gguf "Describe a fictional character"
+
+# Text embeddings
+hemlock examples/embeddings.hml ~/models/nomic-embed-text.gguf
+
+# Model inspection
+hemlock examples/model_info.hml ~/models/llama-7b.gguf
 ```
 
 ## License
