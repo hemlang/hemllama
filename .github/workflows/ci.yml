@@ -74,9 +74,17 @@ jobs:
           echo "Checking Hemlock source files exist..."
           test -f llama.hml && echo "llama.hml: OK"
           test -f test_basic.hml && echo "test_basic.hml: OK"
+          test -f test_model.hml && echo "test_model.hml: OK"
           test -f examples/simple.hml && echo "examples/simple.hml: OK"
           test -f examples/chat.hml && echo "examples/chat.hml: OK"
           test -f examples/oneshot.hml && echo "examples/oneshot.hml: OK"
+          test -f examples/streaming.hml && echo "examples/streaming.hml: OK"
+          test -f examples/chat_template.hml && echo "examples/chat_template.hml: OK"
+          test -f examples/grammar.hml && echo "examples/grammar.hml: OK"
+          test -f examples/embeddings.hml && echo "examples/embeddings.hml: OK"
+          test -f examples/tokenizer.hml && echo "examples/tokenizer.hml: OK"
+          test -f examples/infill.hml && echo "examples/infill.hml: OK"
+          test -f examples/model_info.hml && echo "examples/model_info.hml: OK"
           echo "All source files present!"
 
   lint:

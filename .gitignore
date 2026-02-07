@@ -10,6 +10,9 @@ llama.cpp/build/
 # Test outputs
 *.log
 
+# Downloaded models
+models/
+
 # Editor/IDE
 .vscode/
 *.swp

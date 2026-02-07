@@ -1,0 +1,316 @@
+#!/usr/bin/env hemlock
+// Model tests - requires a GGUF model file
+//
+// Usage:
+//   hemlock test_model.hml <model.gguf>
+//
+// To get a tiny test model (~15MB):
+//   ./scripts/download_test_model.sh
+
+import * as llama from "./llama.hml";
+
+let passed = 0;
+let failed = 0;
+
+fn assert(condition, name) {
+    if (condition) {
+        print("  PASS: " + name);
+        passed = passed + 1;
+    } else {
+        print("  FAIL: " + name);
+        failed = failed + 1;
+    }
+}
+
+fn main(args) {
+    if (args.length < 2) {
+        print("Usage: hemlock test_model.hml <model.gguf>");
+        print("");
+        print("Get a tiny test model with:");
+        print("  ./scripts/download_test_model.sh");
+        return 1;
+    }
+
+    let model_path = args[1];
+
+    llama.backend_init();
+
+    // ============================
+    // Model loading
+    // ============================
+    print("=== Model Loading ===");
+
+    let model = llama.model_load(model_path, {
+        n_gpu_layers: 0,
+        use_mmap: true
+    });
+    assert(model != null, "model_load() returns non-null");
+
+    // ============================
+    // Model info
+    // ============================
+    print("");
+    print("=== Model Info ===");
+
+    let info = llama.model_info(model);
+    assert(info.description.length > 0, "model_info().description is non-empty");
+    assert(info.n_embd > 0, "model_info().n_embd > 0");
+    assert(info.n_layer > 0, "model_info().n_layer > 0");
+    assert(info.n_ctx_train > 0, "model_info().n_ctx_train > 0");
+    assert(info.n_params > 0, "model_info().n_params > 0");
+    assert(info.size > 0, "model_info().size > 0");
+    print("    Description: " + info.description);
+    print("    Params: " + info.n_params + ", Layers: " + info.n_layer);
+
+    // ============================
+    // Vocabulary
+    // ============================
+    print("");
+    print("=== Vocabulary ===");
+
+    let vocab = llama.vocab_info(model);
+    assert(vocab.n_tokens > 0, "vocab_info().n_tokens > 0");
+    assert(vocab.bos_token >= 0, "vocab_info().bos_token >= 0");
+    assert(vocab.eos_token >= 0, "vocab_info().eos_token >= 0");
+    print("    Vocab size: " + vocab.n_tokens + ", BOS: " + vocab.bos_token + ", EOS: " + vocab.eos_token);
+
+    let bos_text = llama.vocab_get_text(model, vocab.bos_token);
+    assert(bos_text.length > 0, "vocab_get_text(BOS) returns non-empty");
+
+    let bos_ctrl = llama.is_control(model, vocab.bos_token);
+    assert(bos_ctrl == true, "BOS is a control token");
+
+    let eos_eog = llama.is_eog(model, vocab.eos_token);
+    assert(eos_eog == true, "EOS is end-of-generation");
+
+    // Vocab score and attributes
+    let score = llama.vocab_get_score(model, 0);
+    assert(score != null, "vocab_get_score() returns a value");
+
+    let attr = llama.vocab_get_attr(model, vocab.bos_token);
+    assert(attr >= 0, "vocab_get_attr() returns >= 0");
+
+    // ============================
+    // Tokenization
+    // ============================
+    print("");
+    print("=== Tokenization ===");
+
+    let text = "Hello, world!";
+    let tokens = llama.tokenize(model, text, { add_special: true });
+    assert(tokens.length > 0, "tokenize() returns tokens");
+    print("    \"" + text + "\" -> " + tokens.length + " tokens");
+
+    // First token should be BOS (with add_special: true)
+    if (vocab.add_bos) {
+        assert(tokens[0] == vocab.bos_token, "first token is BOS with add_special");
+    }
+
+    let tokens_no_special = llama.tokenize(model, text, { add_special: false });
+    assert(tokens_no_special.length > 0, "tokenize(no special) returns tokens");
+    if (vocab.add_bos) {
+        assert(tokens_no_special.length < tokens.length, "fewer tokens without specials");
+    }
+
+    // Token to piece
+    for (let i = 0; i < tokens.length; i = i + 1) {
+        let piece = llama.token_to_piece(model, tokens[i], true);
+        assert(piece.length >= 0, "token_to_piece() returns string for token " + tokens[i]);
+    }
+
+    // Detokenize round-trip
+    let detokenized = llama.detokenize(model, tokens_no_special, { remove_special: false });
+    assert(detokenized == text, "detokenize(tokenize(text)) == text");
+    print("    Round-trip: \"" + detokenized + "\"");
+
+    // ============================
+    // Context
+    // ============================
+    print("");
+    print("=== Context ===");
+
+    let ctx = llama.context_create(model, {
+        n_ctx: 512,
+        n_batch: 256,
+        n_threads: 2
+    });
+    assert(ctx != null, "context_create() returns non-null");
+
+    let ctx_info = llama.context_info(ctx);
+    assert(ctx_info.n_ctx == 512, "context n_ctx matches");
+    assert(ctx_info.n_batch == 256, "context n_batch matches");
+    print("    ctx: " + ctx_info.n_ctx + " ctx, " + ctx_info.n_batch + " batch, " + ctx_info.n_threads + " threads");
+
+    let ctx_model = llama.get_model(ctx);
+    assert(ctx_model != null, "get_model() returns non-null");
+
+    llama.set_threads(ctx, 4, 4);
+    let new_info = llama.context_info(ctx);
+    assert(new_info.n_threads == 4, "set_threads() works");
+
+    // ============================
+    // Decode
+    // ============================
+    print("");
+    print("=== Decode ===");
+
+    let result = llama.decode(ctx, tokens, 0);
+    assert(result == 0, "decode() returns 0 (success)");
+
+    let logits = llama.get_logits(ctx);
+    assert(logits != null, "get_logits() returns non-null");
+
+    let logits_0 = llama.get_logits_ith(ctx, tokens.length - 1);
+    assert(logits_0 != null, "get_logits_ith() returns non-null");
+
+    // ============================
+    // Sampling with model
+    // ============================
+    print("");
+    print("=== Sample ===");
+
+    let sampler = llama.sampler_create({ temp: 0.8, seed: 42 });
+    let token = llama.sample(sampler, ctx, -1);
+    assert(token >= 0, "sample() returns valid token");
+    assert(token < vocab.n_tokens, "sample() returns token in vocab range");
+    print("    Sampled token: " + token + " -> \"" + llama.token_to_piece(model, token, false) + "\"");
+
+    llama.sampler_accept(sampler, token);
+    assert(true, "sampler_accept() succeeds");
+
+    llama.sampler_free(sampler);
+
+    // ============================
+    // KV Cache
+    // ============================
+    print("");
+    print("=== KV Cache ===");
+
+    let pos_max = llama.kv_cache_seq_pos_max(ctx, 0);
+    assert(pos_max >= 0, "kv_cache_seq_pos_max() >= 0");
+    print("    Max position: " + pos_max);
+
+    let pos_min = llama.kv_cache_seq_pos_min(ctx, 0);
+    assert(pos_min >= 0, "kv_cache_seq_pos_min() >= 0");
+
+    // Copy sequence
+    llama.kv_cache_seq_cp(ctx, 0, 1, 0, -1);
+    assert(true, "kv_cache_seq_cp() succeeds");
+
+    // Keep only seq 0
+    llama.kv_cache_seq_keep(ctx, 0);
+    assert(true, "kv_cache_seq_keep() succeeds");
+
+    // Clear
+    llama.kv_cache_clear(ctx);
+    assert(true, "kv_cache_clear() succeeds");
+
+    // ============================
+    // Chat template
+    // ============================
+    print("");
+    print("=== Chat Template ===");
+
+    let tmpl = llama.chat_template(model, null);
+    if (tmpl != "") {
+        assert(tmpl.length > 0, "chat_template() returns template");
+        print("    Template found (" + tmpl.length + " chars)");
+
+        let messages = [
+            { role: "user", content: "Hello" }
+        ];
+        let formatted = llama.apply_chat_template(model, messages, {
+            add_generation_prompt: true
+        });
+        assert(formatted.length > 0, "apply_chat_template() returns formatted text");
+        print("    Formatted: " + formatted.length + " chars");
+    } else {
+        print("    No chat template (skipping template tests)");
+    }
+
+    // ============================
+    // Grammar sampler (model-dependent)
+    // ============================
+    print("");
+    print("=== Grammar Sampler ===");
+
+    let grammar = "root ::= \"hello\" | \"world\"";
+    let grammar_sampler = llama.sampler_init_grammar(model, grammar, "root");
+    assert(grammar_sampler != null, "sampler_init_grammar() returns non-null");
+    llama.sampler_free(grammar_sampler);
+
+    // ============================
+    // Logit bias sampler
+    // ============================
+    print("");
+    print("=== Logit Bias ===");
+
+    let biases = [
+        { token: vocab.eos_token, bias: -100.0 }
+    ];
+    let bias_sampler = llama.sampler_init_logit_bias(model, biases);
+    assert(bias_sampler != null, "sampler_init_logit_bias() returns non-null");
+    llama.sampler_free(bias_sampler);
+
+    // ============================
+    // Performance
+    // ============================
+    print("");
+    print("=== Performance ===");
+
+    llama.perf_print(ctx);
+    assert(true, "perf_print() succeeds");
+    llama.perf_reset(ctx);
+    assert(true, "perf_reset() succeeds");
+
+    // ============================
+    // Generate (high-level)
+    // ============================
+    print("");
+    print("=== Generate ===");
+
+    // Re-create context fresh for generation
+    llama.context_free(ctx);
+    ctx = llama.context_create(model, { n_ctx: 512, n_batch: 256 });
+
+    let output = llama.generate(ctx, model, "The answer is", {
+        n_predict: 10,
+        temp: 0.5,
+        seed: 42
+    });
+    assert(output.length > 0, "generate() returns non-empty output");
+    print("    Generated: \"" + output + "\"");
+
+    // ============================
+    // Cleanup
+    // ============================
+    print("");
+    print("=== Cleanup ===");
+
+    llama.context_free(ctx);
+    assert(true, "context_free()");
+
+    llama.model_free(model);
+    assert(true, "model_free()");
+
+    llama.backend_free();
+    assert(true, "backend_free()");
+
+    // ============================
+    // Results
+    // ============================
+    print("");
+    print("=============================");
+    print("Results: " + passed + " passed, " + failed + " failed");
+    print("=============================");
+
+    if (failed > 0) {
+        print("SOME TESTS FAILED!");
+        return 1;
+    }
+
+    print("All tests passed!");
+    return 0;
+}
+
+main(args);
